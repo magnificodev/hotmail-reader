@@ -1,0 +1,45 @@
+# Node / Next.js
+node_modules/
+.next/
+out/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-store/
+.turbo/
+.vercel/
+
+# Env files (do not commit secrets)
+.env
+.env.local
+.env.*.local
+api/.env
+api/.env.local
+
+# Logs
+logs
+*.log
+*.log.*
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+api/.venv/
+venv/
+.venv/
+
+# Test/coverage
+coverage/
+.coverage*
+*.coverage
+
+
