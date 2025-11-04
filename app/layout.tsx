@@ -1,7 +1,13 @@
+import "./globals.css";
+import { AppToaster } from "@/components/ui/toaster";
+
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="vi">
-      <body style={{ fontFamily: 'system-ui, sans-serif', margin: 0 }}>{children}</body>
+    <html lang="vi" suppressHydrationWarning>
+      <body className="min-h-screen bg-background text-foreground" suppressHydrationWarning>
+        {children}
+        <AppToaster />
+      </body>
     </html>
   );
 }
