@@ -49,27 +49,24 @@ echo -e "${YELLOW}📁 Creating application directory...${NC}"
 mkdir -p ${APP_DIR}
 cd ${APP_DIR}
 
-# Clone repository (for initial deployment only)
+# Clone or update repository
 if [ -d ".git" ]; then
-    echo -e "${RED}⚠ Repository already exists in ${APP_DIR}${NC}"
-    echo -e "${YELLOW}This script is for initial deployment only.${NC}"
-    echo -e "${YELLOW}To update, use: cd ${APP_DIR} && git pull origin main${NC}"
-    exit 1
+    echo -e "${YELLOW}📥 Repository exists, pulling latest...${NC}"
+    git pull origin main
+else
+    echo -e "${YELLOW}📥 Cloning repository...${NC}"
+    echo -e "${YELLOW}For private repo, use SSH URL: git@github.com:username/hotmail-reader.git${NC}"
+    echo -e "${YELLOW}Or use HTTPS with token: https://token@github.com/username/hotmail-reader.git${NC}"
+    read -p "Enter your GitHub repository URL: " REPO_URL
+
+    if [ -z "$REPO_URL" ]; then
+        echo -e "${RED}Repository URL is required${NC}"
+        exit 1
+    fi
+
+    git clone ${REPO_URL} .
+    echo -e "${GREEN}✓ Repository cloned${NC}"
 fi
-
-echo -e "${YELLOW}📥 Cloning repository...${NC}"
-echo -e "${YELLOW}For private repo, use SSH URL: git@github.com:username/hotmail-reader.git${NC}"
-echo -e "${YELLOW}Or use HTTPS with token: https://token@github.com/username/hotmail-reader.git${NC}"
-read -p "Enter your GitHub repository URL: " REPO_URL
-
-if [ -z "$REPO_URL" ]; then
-    echo -e "${RED}Repository URL is required${NC}"
-    exit 1
-fi
-
-git clone ${REPO_URL} .
-
-echo -e "${GREEN}✓ Repository cloned${NC}"
 
 # Setup Backend
 echo -e "${YELLOW}🐍 Setting up Python backend...${NC}"
@@ -115,6 +112,10 @@ cd ${APP_DIR}
 echo -e "${YELLOW}📦 Installing frontend dependencies...${NC}"
 npm install --production=false
 
+# Configure frontend API base URL to use Nginx proxy
+echo -e "${YELLOW}🛠  Configuring frontend environment...${NC}"
+echo "NEXT_PUBLIC_API_URL=/api" > .env.local
+
 # Build frontend
 echo -e "${YELLOW}🔨 Building frontend...${NC}"
 npm run build
@@ -131,9 +132,10 @@ After=network.target
 [Service]
 Type=simple
 User=${SERVICE_USER}
-WorkingDirectory=${APP_DIR}/api
+WorkingDirectory=${APP_DIR}
 Environment="PATH=${APP_DIR}/api/.venv/bin"
-ExecStart=${APP_DIR}/api/.venv/bin/uvicorn api.main:app --host 0.0.0.0 --port ${BACKEND_PORT}
+Environment="PYTHONPATH=${APP_DIR}"
+ExecStart=${APP_DIR}/api/.venv/bin/python -m uvicorn api.main:app --host 0.0.0.0 --port ${BACKEND_PORT}
 Restart=always
 RestartSec=10
 
@@ -161,16 +163,47 @@ if [ -z "$DOMAIN" ]; then
     echo -e "${YELLOW}Using IP: ${DOMAIN}${NC}"
 fi
 
-# Create Nginx config
+# Create systemd service for frontend (Next.js)
+echo -e "${YELLOW}⚙️  Creating systemd service for frontend...${NC}"
+cat > /etc/systemd/system/${APP_NAME}-web.service << EOF
+[Unit]
+Description=Hotmail Reader Frontend (Next.js)
+After=network.target
+
+[Service]
+Type=simple
+User=${SERVICE_USER}
+WorkingDirectory=${APP_DIR}
+Environment="PORT=${FRONTEND_PORT}"
+ExecStart=/usr/bin/npm start
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+systemctl daemon-reload
+systemctl enable ${APP_NAME}-web.service
+systemctl restart ${APP_NAME}-web.service
+
+# Create Nginx config: root domain -> frontend (port 3000), /api -> backend (8000)
 cat > /etc/nginx/sites-available/${APP_NAME} << EOF
-# Backend API
 server {
     listen 80;
-    server_name api.${DOMAIN} ${DOMAIN};
+    server_name ${DOMAIN} www.${DOMAIN};
 
-    # API endpoints
-    location / {
+    location /api {
         proxy_pass http://127.0.0.1:${BACKEND_PORT};
+        proxy_http_version 1.1;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:${FRONTEND_PORT};
         proxy_http_version 1.1;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection 'upgrade';
@@ -181,26 +214,6 @@ server {
         proxy_cache_bypass \$http_upgrade;
     }
 }
-
-# Frontend (if using npm start)
-# server {
-#     listen 80;
-#     server_name ${DOMAIN} www.${DOMAIN};
-#     root ${APP_DIR}/out;
-#     index index.html;
-#
-#     location / {
-#         try_files \$uri \$uri/ /index.html;
-#     }
-#
-#     location /api {
-#         proxy_pass http://127.0.0.1:${BACKEND_PORT};
-#         proxy_http_version 1.1;
-#         proxy_set_header Host \$host;
-#         proxy_set_header X-Real-IP \$remote_addr;
-#         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-#     }
-# }
 EOF
 
 # Enable site
@@ -224,9 +237,8 @@ echo -e "${GREEN}✓ Permissions set${NC}"
 
 # Summary
 echo -e "\n${GREEN}✅ Deployment completed successfully!${NC}\n"
-echo -e "${GREEN}Backend API:${NC} http://${DOMAIN}:${BACKEND_PORT}"
-echo -e "${GREEN}Nginx Proxy:${NC} http://api.${DOMAIN}"
-echo -e "${GREEN}Frontend:${NC} Static files in ${APP_DIR}/out"
+echo -e "${GREEN}Backend API (direct):${NC} http://${DOMAIN}:${BACKEND_PORT}"
+echo -e "${GREEN}App URL:${NC} http://${DOMAIN}"
 echo -e "\n${YELLOW}⚠ IMPORTANT - Next steps:${NC}"
 echo -e "1. Edit ${APP_DIR}/api/.env:"
 echo -e "   - Set UI_ORIGIN to your actual domain/IP"

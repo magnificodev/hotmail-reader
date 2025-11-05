@@ -70,6 +70,16 @@ NODE_ENV=development
 
 Chỉ cần tạo file này nếu backend không chạy ở port 8000 mặc định.
 
+## Deploy lên VPS
+
+1. SSH vào VPS: `ssh user@your-vps-ip`
+2. Clone repository hoặc upload `deploy.sh`
+3. Chạy: `sudo bash deploy.sh`
+4. Cấu hình `.env` tại `/opt/hotmail-reader/api/.env`
+5. Restart: `sudo systemctl restart hotmail-reader-api`
+
+Xem `QUICK_DEPLOY.md` để biết chi tiết.
+
 ## Ghi chú
 - Không log secrets. Không commit `.env`.
 - OTP regex mặc định: 6 chữ số độc lập.
