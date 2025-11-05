@@ -105,28 +105,6 @@ fi
 
 echo -e "${GREEN}✓ Backend ready${NC}"
 
-# Frontend setup (Next.js static export)
-echo -e "${YELLOW}⚛️  Setting up frontend (Next.js)...${NC}"
-cd "${APP_DIR}"
-export HUSKY=0
-if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
-echo "NEXT_PUBLIC_API_URL=/api" > .env.local
-
-# Ensure static export enabled (best-effort, idempotent)
-if [ -f next.config.mjs ]; then
-  if ! grep -q "output: 'export'" next.config.mjs; then
-    sed -i "s|export default nextConfig;|nextConfig.output='export';\nif(!nextConfig.images) nextConfig.images={};\nnextConfig.images.unoptimized=true;\n\nexport default nextConfig;|" next.config.mjs || true
-  fi
-fi
-
-echo -e "${YELLOW}🔨 Building frontend...${NC}"
-npm run -s build
-echo -e "${YELLOW}📤 Exporting static site...${NC}"
-npx --yes next export
-mkdir -p "${APP_DIR}/out"
-chown -R "${SERVICE_USER}:${SERVICE_USER}" "${APP_DIR}/out"
-chmod -R 755 "${APP_DIR}/out"
-
 # systemd service for backend
 echo -e "${YELLOW}⚙️  Creating systemd service for API...${NC}"
 cat > "/etc/systemd/system/${APP_NAME}-api.service" <<EOF
@@ -152,6 +130,50 @@ systemctl daemon-reload
 systemctl enable "${APP_NAME}-api.service"
 systemctl restart "${APP_NAME}-api.service"
 echo -e "${GREEN}✓ API service started${NC}"
+
+# Optional: enable swap to avoid OOM during frontend build
+SWAP_ENABLE=${SWAP_ENABLE:-"0"}
+if [ "${SWAP_ENABLE}" = "1" ] && ! swapon --show | grep -q swapfile; then
+  echo -e "${YELLOW}🧠 Enabling 2G swap for build stability...${NC}"
+  fallocate -l 2G /swapfile || dd if=/dev/zero of=/swapfile bs=1M count=2048
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  grep -q "/swapfile" /etc/fstab || echo "/swapfile none swap sw 0 0" >> /etc/fstab
+fi
+
+# Frontend setup (Next.js static export)
+echo -e "${YELLOW}⚛️  Setting up frontend (Next.js)...${NC}"
+cd "${APP_DIR}"
+export HUSKY=0
+# Prefer ci if lock exists, fall back to install on failure (e.g., OOM kill)
+if [ -f package-lock.json ]; then
+  (npm ci --no-audit --no-fund) || (echo -e "${YELLOW}npm ci failed, falling back to npm install...${NC}" && npm install --no-audit --no-fund)
+else
+  npm install --no-audit --no-fund
+fi
+echo "NEXT_PUBLIC_API_URL=/api" > .env.local
+
+# Ensure static export enabled (best-effort, idempotent)
+if [ -f next.config.mjs ]; then
+  if ! grep -q "output: 'export'" next.config.mjs; then
+    sed -i "s|export default nextConfig;|nextConfig.output='export';\nif(!nextConfig.images) nextConfig.images={};\nnextConfig.images.unoptimized=true;\n\nexport default nextConfig;|" next.config.mjs || true
+  fi
+fi
+
+echo -e "${YELLOW}🔨 Building frontend...${NC}"
+if ! npm run -s build; then
+  echo -e "${RED}Frontend build failed. Continuing to configure API and Nginx. UI may be unavailable.${NC}"
+fi
+echo -e "${YELLOW}📤 Exporting static site...${NC}"
+if ! npx --yes next export; then
+  echo -e "${YELLOW}Export failed; ensuring out/ exists so Nginx still starts.${NC}"
+  mkdir -p "${APP_DIR}/out"
+  echo "<html><body><h1>Build pending</h1></body></html>" > "${APP_DIR}/out/index.html"
+fi
+mkdir -p "${APP_DIR}/out"
+chown -R "${SERVICE_USER}:${SERVICE_USER}" "${APP_DIR}/out"
+chmod -R 755 "${APP_DIR}/out"
 
 # Nginx config
 echo -e "${YELLOW}🌐 Configuring Nginx...${NC}"
