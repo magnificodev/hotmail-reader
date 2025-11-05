@@ -26,6 +26,7 @@ REPO_URL=${REPO_URL:-"https://github.com/magnificodev/hotmail-reader.git"}
 GIT_BRANCH=${GIT_BRANCH:-"main"}
 AUTO_SSL=${AUTO_SSL:-"0"}
 CERTBOT_EMAIL=${CERTBOT_EMAIL:-""}
+PROMPT=${PROMPT:-"0"}
 
 # Root check
 if [ "${EUID}" -ne 0 ]; then
@@ -80,6 +81,28 @@ fi
 "${APP_DIR}/api/.venv/bin/pip" -q install -r requirements.txt
 
 # Ensure backend .env populated for production
+# Interactive prompt for DOMAIN and SSL if requested
+if [ "${PROMPT}" = "1" ]; then
+  if [ -z "${DOMAIN}" ]; then
+    DEF_IP=$(hostname -I | awk '{print $1}')
+    read -r -p "Domain (để trống dùng IP ${DEF_IP}): " IN_DOMAIN || true
+    if [ -n "${IN_DOMAIN}" ]; then DOMAIN=${IN_DOMAIN}; else DOMAIN=${DEF_IP}; fi
+  fi
+  if [ "${AUTO_SSL}" != "1" ]; then
+    read -r -p "Bật HTTPS tự động với Let's Encrypt? (y/N): " IN_SSL || true
+    case "${IN_SSL}" in
+      y|Y)
+        AUTO_SSL=1
+        if [ -z "${CERTBOT_EMAIL}" ]; then
+          read -r -p "Nhập email cho certbot (khuyến nghị): " IN_EMAIL || true
+          CERTBOT_EMAIL=${IN_EMAIL:-""}
+        fi
+        ;;
+      *) AUTO_SSL=0 ;;
+    esac
+  fi
+fi
+
 if [ -z "${DOMAIN}" ]; then
   DOMAIN=$(hostname -I | awk '{print $1}')
 fi
