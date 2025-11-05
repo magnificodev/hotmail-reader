@@ -80,27 +80,58 @@ fi
 "${APP_DIR}/api/.venv/bin/pip" -q install -r requirements.txt
 
 # Ensure backend .env populated for production
+# Interactive inputs (only ask if values not already provided)
+DEF_IP=$(hostname -I | awk '{print $1}')
 if [ -z "${DOMAIN}" ]; then
-  DOMAIN=$(hostname -I | awk '{print $1}')
+  read -r -p "Domain (để trống dùng IP ${DEF_IP}): " IN_DOMAIN || true
+  if [ -n "${IN_DOMAIN}" ]; then DOMAIN=${IN_DOMAIN}; else DOMAIN=${DEF_IP}; fi
 fi
-UI_ORIGIN_VALUE="http://${DOMAIN}"
-OAUTH_REDIRECT_URI_VALUE="http://${DOMAIN}/oauth/callback"
+
+if [ "${AUTO_SSL}" != "1" ]; then
+  read -r -p "Bật HTTPS với Let's Encrypt? (y/N): " IN_SSL || true
+  case "${IN_SSL}" in
+    y|Y) AUTO_SSL=1 ;;
+    *) AUTO_SSL=0 ;;
+  esac
+fi
+
+if [ "${AUTO_SSL}" = "1" ] && [ -z "${CERTBOT_EMAIL}" ]; then
+  read -r -p "Email cho certbot (khuyến nghị, Enter để bỏ qua): " IN_EMAIL || true
+  CERTBOT_EMAIL=${IN_EMAIL:-""}
+fi
+
+# OAuth (optional)
+USE_OAUTH=${USE_OAUTH:-""}
+if [ -z "${USE_OAUTH}" ]; then
+  read -r -p "Dùng OAuth CLIENT_ID/SECRET? (y/N): " IN_OAUTH || true
+  case "${IN_OAUTH}" in y|Y) USE_OAUTH=1 ;; *) USE_OAUTH=0 ;; esac
+fi
+if [ "${USE_OAUTH}" = "1" ]; then
+  if [ -z "${CLIENT_ID:-}" ]; then read -r -p "CLIENT_ID: " CLIENT_ID || true; fi
+  if [ -z "${GRAPH_CLIENT_SECRET:-}" ]; then read -r -p "GRAPH_CLIENT_SECRET (Enter nếu public app): " GRAPH_CLIENT_SECRET || true; fi
+  GRAPH_TENANT=${GRAPH_TENANT:-"consumers"}
+fi
+SCHEME=$([ "${AUTO_SSL}" = "1" ] && echo https || echo http)
+UI_ORIGIN_VALUE="${SCHEME}://${DOMAIN}"
+OAUTH_REDIRECT_URI_VALUE="${SCHEME}://${DOMAIN}/oauth/callback"
 if [ ! -f .env ]; then
-  cat > .env <<EOF
-UI_ORIGIN=${UI_ORIGIN_VALUE}
-NODE_ENV=production
-OAUTH_REDIRECT_URI=${OAUTH_REDIRECT_URI_VALUE}
-# Optional OAuth
-# CLIENT_ID=
-# GRAPH_CLIENT_SECRET=
-# GRAPH_TENANT=consumers
-# OUTLOOK_SCOPE=offline_access https://outlook.office.com/IMAP.AccessAsUser.All
-EOF
+  {
+    echo "UI_ORIGIN=${UI_ORIGIN_VALUE}"
+    echo "NODE_ENV=production"
+    echo "OAUTH_REDIRECT_URI=${OAUTH_REDIRECT_URI_VALUE}"
+    if [ "${USE_OAUTH}" = "1" ] && [ -n "${CLIENT_ID:-}" ]; then echo "CLIENT_ID=${CLIENT_ID}"; fi
+    if [ "${USE_OAUTH}" = "1" ] && [ -n "${GRAPH_CLIENT_SECRET:-}" ]; then echo "GRAPH_CLIENT_SECRET=${GRAPH_CLIENT_SECRET}"; fi
+    if [ "${USE_OAUTH}" = "1" ] && [ -n "${GRAPH_TENANT:-}" ]; then echo "GRAPH_TENANT=${GRAPH_TENANT}"; fi
+    echo "OUTLOOK_SCOPE=offline_access https://outlook.office.com/IMAP.AccessAsUser.All"
+  } > .env
 else
   # idempotently ensure required keys
   grep -q '^UI_ORIGIN=' .env || echo "UI_ORIGIN=${UI_ORIGIN_VALUE}" >> .env
   grep -q '^NODE_ENV=' .env || echo "NODE_ENV=production" >> .env
   grep -q '^OAUTH_REDIRECT_URI=' .env || echo "OAUTH_REDIRECT_URI=${OAUTH_REDIRECT_URI_VALUE}" >> .env
+  if [ "${USE_OAUTH}" = "1" ] && [ -n "${CLIENT_ID:-}" ] && ! grep -q '^CLIENT_ID=' .env; then echo "CLIENT_ID=${CLIENT_ID}" >> .env; fi
+  if [ "${USE_OAUTH}" = "1" ] && [ -n "${GRAPH_CLIENT_SECRET:-}" ] && ! grep -q '^GRAPH_CLIENT_SECRET=' .env; then echo "GRAPH_CLIENT_SECRET=${GRAPH_CLIENT_SECRET}" >> .env; fi
+  if [ "${USE_OAUTH}" = "1" ] && [ -n "${GRAPH_TENANT:-}" ] && ! grep -q '^GRAPH_TENANT=' .env; then echo "GRAPH_TENANT=${GRAPH_TENANT}" >> .env; fi
 fi
 
 echo -e "${GREEN}✓ Backend ready${NC}"
