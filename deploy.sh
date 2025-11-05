@@ -100,38 +100,17 @@ if [ "${AUTO_SSL}" = "1" ] && [ -z "${CERTBOT_EMAIL}" ]; then
   CERTBOT_EMAIL=${IN_EMAIL:-""}
 fi
 
-# OAuth (optional)
-USE_OAUTH=${USE_OAUTH:-""}
-if [ -z "${USE_OAUTH}" ]; then
-  read -r -p "Dùng OAuth CLIENT_ID/SECRET? (y/N): " IN_OAUTH || true
-  case "${IN_OAUTH}" in y|Y) USE_OAUTH=1 ;; *) USE_OAUTH=0 ;; esac
-fi
-if [ "${USE_OAUTH}" = "1" ]; then
-  if [ -z "${CLIENT_ID:-}" ]; then read -r -p "CLIENT_ID: " CLIENT_ID || true; fi
-  if [ -z "${GRAPH_CLIENT_SECRET:-}" ]; then read -r -p "GRAPH_CLIENT_SECRET (Enter nếu public app): " GRAPH_CLIENT_SECRET || true; fi
-  GRAPH_TENANT=${GRAPH_TENANT:-"consumers"}
-fi
 SCHEME=$([ "${AUTO_SSL}" = "1" ] && echo https || echo http)
 UI_ORIGIN_VALUE="${SCHEME}://${DOMAIN}"
-OAUTH_REDIRECT_URI_VALUE="${SCHEME}://${DOMAIN}/oauth/callback"
 if [ ! -f .env ]; then
   {
     echo "UI_ORIGIN=${UI_ORIGIN_VALUE}"
     echo "NODE_ENV=production"
-    echo "OAUTH_REDIRECT_URI=${OAUTH_REDIRECT_URI_VALUE}"
-    if [ "${USE_OAUTH}" = "1" ] && [ -n "${CLIENT_ID:-}" ]; then echo "CLIENT_ID=${CLIENT_ID}"; fi
-    if [ "${USE_OAUTH}" = "1" ] && [ -n "${GRAPH_CLIENT_SECRET:-}" ]; then echo "GRAPH_CLIENT_SECRET=${GRAPH_CLIENT_SECRET}"; fi
-    if [ "${USE_OAUTH}" = "1" ] && [ -n "${GRAPH_TENANT:-}" ]; then echo "GRAPH_TENANT=${GRAPH_TENANT}"; fi
-    echo "OUTLOOK_SCOPE=offline_access https://outlook.office.com/IMAP.AccessAsUser.All"
   } > .env
 else
   # idempotently ensure required keys
   grep -q '^UI_ORIGIN=' .env || echo "UI_ORIGIN=${UI_ORIGIN_VALUE}" >> .env
   grep -q '^NODE_ENV=' .env || echo "NODE_ENV=production" >> .env
-  grep -q '^OAUTH_REDIRECT_URI=' .env || echo "OAUTH_REDIRECT_URI=${OAUTH_REDIRECT_URI_VALUE}" >> .env
-  if [ "${USE_OAUTH}" = "1" ] && [ -n "${CLIENT_ID:-}" ] && ! grep -q '^CLIENT_ID=' .env; then echo "CLIENT_ID=${CLIENT_ID}" >> .env; fi
-  if [ "${USE_OAUTH}" = "1" ] && [ -n "${GRAPH_CLIENT_SECRET:-}" ] && ! grep -q '^GRAPH_CLIENT_SECRET=' .env; then echo "GRAPH_CLIENT_SECRET=${GRAPH_CLIENT_SECRET}" >> .env; fi
-  if [ "${USE_OAUTH}" = "1" ] && [ -n "${GRAPH_TENANT:-}" ] && ! grep -q '^GRAPH_TENANT=' .env; then echo "GRAPH_TENANT=${GRAPH_TENANT}" >> .env; fi
 fi
 
 echo -e "${GREEN}✓ Backend ready${NC}"
