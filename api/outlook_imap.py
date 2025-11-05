@@ -22,14 +22,12 @@ async def exchange_refresh_token_outlook(client_id: str, refresh_token: str):
     
     tenant = get_tenant()
     token_url = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
-    # Scope của Outlook IMAP
-    scope = get_outlook_scope()
+    # Không gửi scope khi refresh_token để tránh invalid_scope; server sẽ giữ nguyên phạm vi đã cấp
     client_secret = get_client_secret()
     data: Dict[str, str] = {
         "grant_type": "refresh_token",
         "client_id": client_id,
         "refresh_token": refresh_token,
-        "scope": scope,
     }
     if client_secret:
         data["client_secret"] = client_secret

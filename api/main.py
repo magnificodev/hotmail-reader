@@ -22,7 +22,7 @@ from .otp_utils import html_to_text, extract_otp_from_text, within_window
 from .models import EmailMessage, PageResult
 from .config import (
     get_ui_origins, get_client_id, get_client_secret, get_tenant,
-    get_graph_scope, get_oauth_redirect_uri, is_development, get_test_cred_string
+    get_outlook_scope, get_oauth_redirect_uri, is_development, get_test_cred_string
 )
 from .constants import (
     DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE,
@@ -117,7 +117,7 @@ def oauth_authorize() -> RedirectResponse:
             detail="OAuth flow requires CLIENT_ID in environment variables. If you already have refresh_token, use the input field instead."
         )
     tenant = get_tenant()
-    scope = get_graph_scope()
+    scope = get_outlook_scope()
     redirect_uri = get_oauth_redirect_uri()
 
     # Cleanup expired states before creating new one
@@ -169,7 +169,7 @@ async def oauth_callback(request: Request) -> JSONResponse:
 
     client_id = get_client_id()
     tenant = get_tenant()
-    scope = get_graph_scope()
+    scope = get_outlook_scope()
     redirect_uri = get_oauth_redirect_uri()
     client_secret = get_client_secret()
 
