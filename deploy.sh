@@ -206,9 +206,9 @@ if [ "${FRONTEND_READY}" = "1" ] && [ "${SKIP_FRONTEND}" != "1" ]; then
   if ! npm run -s build; then
     echo -e "${RED}Frontend build failed. Continuing to configure API and Nginx. UI may be unavailable.${NC}"
   fi
-  echo -e "${YELLOW}📤 Exporting static site...${NC}"
-  if ! npx --yes next export; then
-    echo -e "${YELLOW}Export failed; writing placeholder index.html so Nginx still serves.${NC}"
+  # With output: 'export', Next.js writes to /out during build
+  if [ ! -f "${APP_DIR}/out/index.html" ]; then
+    echo -e "${YELLOW}No /out detected after build; writing placeholder UI.${NC}"
     echo "<html><body><h1>Build pending</h1></body></html>" > "${APP_DIR}/out/index.html"
   fi
 else
@@ -230,10 +230,10 @@ server {
     location /api/ {
         proxy_pass http://127.0.0.1:${BACKEND_PORT}/;
         proxy_http_version 1.1;
-        proxy_set_header Host $host;
-        proxy_set_header X-Real-IP $remote_addr;
-        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
     # Static frontend
@@ -241,7 +241,7 @@ server {
     index index.html;
 
     location / {
-        try_files $uri $uri/ /index.html;
+        try_files \$uri \$uri/ /index.html;
     }
 }
 EOF
