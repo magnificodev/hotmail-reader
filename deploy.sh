@@ -134,6 +134,15 @@ npm run build
 
 echo -e "${GREEN}✓ Frontend built successfully (static)${NC}"
 
+# Explicit export to /out to be robust across environments
+echo -e "${YELLOW}📤 Exporting static site to /out...${NC}"
+npx next export || npx --yes next export
+
+# Ensure permissions for Nginx to read static files
+mkdir -p ${APP_DIR}/out
+chown -R ${SERVICE_USER}:${SERVICE_USER} ${APP_DIR}/out
+chmod -R 755 ${APP_DIR}/out
+
 # Create systemd service for backend
 echo -e "${YELLOW}⚙️  Creating systemd service...${NC}"
 cat > /etc/systemd/system/${APP_NAME}-api.service << EOF
