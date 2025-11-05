@@ -11,21 +11,50 @@ class Credentials:
 
 def parse_cred_string(cred_string: str) -> Credentials:
     parts = (cred_string or "").split("|")
-    # Ensure we have exactly 4 parts
+    # Ensure at least 4 slots
     parts += [""] * (4 - len(parts))
-    email, password, refresh_token, client_id = parts[:4]
-    email = email.strip()
-    # Handle accidental format: "email password|refresh|client" or "email password|..."
-    if not password:
-        # If first part contains whitespace, try splitting into email and password
-        if " " in email:
-            email_part, _, maybe_pass = email.partition(" ")
-            if email_part and maybe_pass:
-                email = email_part.strip()
-                password = maybe_pass.strip()
-    password = password.strip() or None
-    refresh_token = refresh_token.strip() or None
-    client_id = client_id.strip() or None
+
+    first, p2, p3, p4 = (parts[:4])
+    first = (first or "").strip()
+    p2 = (p2 or "").strip()
+    p3 = (p3 or "").strip()
+    p4 = (p4 or "").strip()
+
+    email = first
+    password: str | None = p2 or None
+    refresh_token: str | None = p3 or None
+    client_id: str | None = p4 or None
+
+    # Support formats:
+    # 1) email|password|refresh|client (chuẩn)
+    # 2) email password|refresh|client (thiếu | giữa email và password)
+    # 3) email password|... (khi p2 rỗng) – đã hỗ trợ trước đây
+
+    if " " in first:
+        email_part, _, maybe_pass = first.partition(" ")
+        maybe_pass = maybe_pass.strip()
+        if email_part:
+            email = email_part.strip()
+            if maybe_pass:
+                if not p2:
+                    # Case 3: email password|... (p2 rỗng)
+                    password = maybe_pass
+                else:
+                    # Case 2: email password|refresh|client → shift right
+                    # p2 is actually refresh_token, p3 is client_id
+                    password = maybe_pass
+                    if p2:
+                        # shift p2 → refresh_token
+                        refresh_token = p2
+                    if p3 and not p4:
+                        # shift p3 → client_id when p4 empty
+                        client_id = p3
+
+    # Normalize empties to None
+    password = (password or "").strip() or None
+    refresh_token = (refresh_token or "").strip() or None
+    client_id = (client_id or "").strip() or None
+
     return Credentials(email=email, password=password, refresh_token=refresh_token, client_id=client_id)
 
 

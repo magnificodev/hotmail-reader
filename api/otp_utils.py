@@ -20,16 +20,33 @@ _OTP_PATTERNS = [
 
 
 def html_to_text(html: str) -> str:
+    """Convert HTML to plain text reliably.
+
+    Strategy:
+    1) Try html5lib (best fidelity)
+    2) Fallback to built-in 'html.parser'
+    3) As last resort, strip tags with regex
+    Always return normalized plain text.
+    """
+    raw = html or ""
+    # Try with html5lib first
     try:
-        soup = BeautifulSoup(html or "", "html5lib")
-        # Giữ line breaks, dùng "\n" thay vì space
+        soup = BeautifulSoup(raw, "html5lib")
         text = soup.get_text("\n", strip=True)
-        # Normalize: đổi mọi newline thành 1 space, sau đó gộp nhiều space → 1
-        text = _WHITESPACE_NEWLINE_PATTERN.sub(" ", text)  # Newlines → space
-        text = _MULTIPLE_SPACES_PATTERN.sub(" ", text)  # Collapse multiple spaces
-        return text.strip()
     except Exception:
-        return html or ""
+        # Fallback to built-in parser
+        try:
+            soup = BeautifulSoup(raw, "html.parser")
+            text = soup.get_text("\n", strip=True)
+        except Exception:
+            # Last resort: strip tags by regex
+            import re as _re
+            text = _re.sub(r"<[^>]*>", " ", raw)
+
+    # Normalize whitespace
+    text = _WHITESPACE_NEWLINE_PATTERN.sub(" ", text)
+    text = _MULTIPLE_SPACES_PATTERN.sub(" ", text)
+    return text.strip()
 
 
 def _is_in_url(text: str, otp: str) -> bool:
