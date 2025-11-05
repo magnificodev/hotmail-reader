@@ -54,13 +54,21 @@ sudo nano /opt/hotmail-reader/api/.env
 
 Cập nhật các giá trị:
 ```env
-CLIENT_ID=9e5f94bc-e8a4-4e73-b8be-63364c29d753
+# CLIENT_ID chỉ cần nếu bạn muốn dùng OAuth flow (/oauth/authorize)
+# Nếu người dùng chỉ nhập credString vào input, không cần CLIENT_ID
+CLIENT_ID=9e5f94bc-e8a4-4e73-b8be-63364c29d753  # Optional nếu không dùng OAuth flow
+
 GRAPH_TENANT=consumers
 OUTLOOK_SCOPE=offline_access https://outlook.office.com/IMAP.AccessAsUser.All
 UI_ORIGIN=https://yourdomain.com  # hoặc http://your-ip
 NODE_ENV=production
-OAUTH_REDIRECT_URI=https://api.yourdomain.com/oauth/callback
+OAUTH_REDIRECT_URI=https://api.yourdomain.com/oauth/callback  # Chỉ cần nếu dùng OAuth flow
 ```
+
+**Lưu ý:**
+- `CLIENT_ID` và `OAUTH_REDIRECT_URI` chỉ cần thiết nếu bạn muốn dùng OAuth flow (endpoint `/oauth/authorize`)
+- Nếu người dùng đã có `refresh_token` và `client_id`, họ có thể nhập vào input mà không cần OAuth flow
+- Trong trường hợp đó, chỉ cần `UI_ORIGIN` và `NODE_ENV=production`
 
 ### Bước 4: Restart services
 

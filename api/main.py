@@ -112,7 +112,10 @@ def _code_challenge_s256(verifier: str) -> str:
 def oauth_authorize() -> RedirectResponse:
     client_id = get_client_id()
     if not client_id:
-        raise HTTPException(status_code=400, detail="Missing CLIENT_ID in env")
+        raise HTTPException(
+            status_code=400, 
+            detail="OAuth flow requires CLIENT_ID in environment variables. If you already have refresh_token, use the input field instead."
+        )
     tenant = get_tenant()
     scope = get_graph_scope()
     redirect_uri = get_oauth_redirect_uri()
