@@ -175,7 +175,7 @@ export default function Page() {
   }
 
   function showErrorToast(context: string, status: number, payload: string) {
-    let message = MESSAGES.ERROR_UNKNOWN;
+    let message: string = MESSAGES.ERROR_UNKNOWN;
     try {
       const js = JSON.parse(payload);
       if (js?.detail) message = String(js.detail);
