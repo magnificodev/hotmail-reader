@@ -49,17 +49,27 @@ echo -e "${YELLOW}📁 Creating application directory...${NC}"
 mkdir -p ${APP_DIR}
 cd ${APP_DIR}
 
-# Clone or update repository
+# Clone repository (for initial deployment only)
 if [ -d ".git" ]; then
-    echo -e "${YELLOW}📥 Updating repository...${NC}"
-    git pull origin main
-else
-    echo -e "${YELLOW}📥 Cloning repository...${NC}"
-    read -p "Enter your GitHub repository URL (e.g., https://github.com/username/hotmail-reader.git): " REPO_URL
-    git clone ${REPO_URL} .
+    echo -e "${RED}⚠ Repository already exists in ${APP_DIR}${NC}"
+    echo -e "${YELLOW}This script is for initial deployment only.${NC}"
+    echo -e "${YELLOW}To update, use: cd ${APP_DIR} && git pull origin main${NC}"
+    exit 1
 fi
 
-echo -e "${GREEN}✓ Repository updated${NC}"
+echo -e "${YELLOW}📥 Cloning repository...${NC}"
+echo -e "${YELLOW}For private repo, use SSH URL: git@github.com:username/hotmail-reader.git${NC}"
+echo -e "${YELLOW}Or use HTTPS with token: https://token@github.com/username/hotmail-reader.git${NC}"
+read -p "Enter your GitHub repository URL: " REPO_URL
+
+if [ -z "$REPO_URL" ]; then
+    echo -e "${RED}Repository URL is required${NC}"
+    exit 1
+fi
+
+git clone ${REPO_URL} .
+
+echo -e "${GREEN}✓ Repository cloned${NC}"
 
 # Setup Backend
 echo -e "${YELLOW}🐍 Setting up Python backend...${NC}"
@@ -81,14 +91,20 @@ echo -e "${GREEN}✓ Backend dependencies installed${NC}"
 if [ ! -f ".env" ]; then
     echo -e "${YELLOW}⚠ Backend .env file not found. Creating template...${NC}"
     cat > .env << EOF
-CLIENT_ID=your_client_id_here
-GRAPH_TENANT=consumers
-OUTLOOK_SCOPE=offline_access https://outlook.office.com/IMAP.AccessAsUser.All
-UI_ORIGIN=http://localhost:3000
+# Required for production
+UI_ORIGIN=http://your-domain-or-ip
 NODE_ENV=production
-OAUTH_REDIRECT_URI=http://localhost:8000/oauth/callback
+
+# Optional - Only needed if using OAuth flow (/oauth/authorize)
+# CLIENT_ID=your_client_id_here
+# OAUTH_REDIRECT_URI=http://your-domain-or-ip:8000/oauth/callback
+
+# Optional - Defaults are usually fine
+# GRAPH_TENANT=consumers
+# OUTLOOK_SCOPE=offline_access https://outlook.office.com/IMAP.AccessAsUser.All
 EOF
     echo -e "${RED}⚠ Please edit ${APP_DIR}/api/.env with your actual values!${NC}"
+    echo -e "${YELLOW}Minimum required: UI_ORIGIN and NODE_ENV=production${NC}"
 fi
 
 # Setup Frontend
@@ -96,6 +112,7 @@ echo -e "${YELLOW}⚛️  Setting up Next.js frontend...${NC}"
 cd ${APP_DIR}
 
 # Install dependencies
+echo -e "${YELLOW}📦 Installing frontend dependencies...${NC}"
 npm install --production=false
 
 # Build frontend
@@ -207,17 +224,26 @@ echo -e "${GREEN}✓ Permissions set${NC}"
 
 # Summary
 echo -e "\n${GREEN}✅ Deployment completed successfully!${NC}\n"
-echo -e "Backend API: http://${DOMAIN}:${BACKEND_PORT}"
-echo -e "Nginx Proxy: http://api.${DOMAIN}"
-echo -e "\n${YELLOW}Next steps:${NC}"
-echo -e "1. Edit ${APP_DIR}/api/.env with your actual values"
-echo -e "2. Restart backend: sudo systemctl restart ${APP_NAME}-api"
-echo -e "3. Check status: sudo systemctl status ${APP_NAME}-api"
-echo -e "4. View logs: sudo journalctl -u ${APP_NAME}-api -f"
-echo -e "\n${YELLOW}For frontend:${NC}"
-echo -e "Option 1: Use static export (already built in ${APP_DIR}/out)"
-echo -e "Option 2: Run with npm start (port ${FRONTEND_PORT})"
-echo -e "\n${YELLOW}For SSL (Let's Encrypt):${NC}"
+echo -e "${GREEN}Backend API:${NC} http://${DOMAIN}:${BACKEND_PORT}"
+echo -e "${GREEN}Nginx Proxy:${NC} http://api.${DOMAIN}"
+echo -e "${GREEN}Frontend:${NC} Static files in ${APP_DIR}/out"
+echo -e "\n${YELLOW}⚠ IMPORTANT - Next steps:${NC}"
+echo -e "1. Edit ${APP_DIR}/api/.env:"
+echo -e "   - Set UI_ORIGIN to your actual domain/IP"
+echo -e "   - Set NODE_ENV=production"
+echo -e "   - (Optional) Add CLIENT_ID if using OAuth flow"
+echo -e ""
+echo -e "2. Restart backend after editing .env:"
+echo -e "   sudo systemctl restart ${APP_NAME}-api"
+echo -e ""
+echo -e "3. Check service status:"
+echo -e "   sudo systemctl status ${APP_NAME}-api"
+echo -e "   sudo journalctl -u ${APP_NAME}-api -f"
+echo -e ""
+echo -e "${YELLOW}To setup frontend with Nginx:${NC}"
+echo -e "Create Nginx config for ${APP_DIR}/out directory"
+echo -e ""
+echo -e "${YELLOW}For SSL (Let's Encrypt):${NC}"
 echo -e "sudo apt-get install certbot python3-certbot-nginx"
 echo -e "sudo certbot --nginx -d ${DOMAIN} -d api.${DOMAIN}"
 
