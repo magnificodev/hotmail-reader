@@ -1,153 +1,132 @@
 #!/bin/bash
 
-# Hotmail Reader - Auto Deployment Script for VPS
-# Usage: sudo bash deploy.sh
+# Hotmail Reader - One-shot Non-Interactive Deployment Script
+# Usage:
+#   sudo bash deploy.sh
+# Optional ENV overrides:
+#   DOMAIN=mydomain.com REPO_URL=... SERVICE_USER=www-data APP_DIR=/opt/hotmail-reader sudo -E bash deploy.sh
 
-set -e  # Exit on error
+set -euo pipefail
 
-echo "🚀 Starting Hotmail Reader deployment..."
+echo "🚀 Starting one-shot deployment..."
 
-# Colors for output
+# Colors
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Configuration
-APP_NAME="hotmail-reader"
-APP_DIR="/opt/${APP_NAME}"
-SERVICE_USER="www-data"
-DOMAIN=""  # Set your domain here, e.g., "yourdomain.com"
-BACKEND_PORT=8000
-FRONTEND_PORT=3000
+# Config (overridable by environment)
+APP_NAME=${APP_NAME:-"hotmail-reader"}
+APP_DIR=${APP_DIR:-"/opt/${APP_NAME}"}
+SERVICE_USER=${SERVICE_USER:-"www-data"}
+BACKEND_PORT=${BACKEND_PORT:-8000}
+DOMAIN=${DOMAIN:-""}
+REPO_URL=${REPO_URL:-""}
 
-# Check if running as root
-if [ "$EUID" -ne 0 ]; then 
-    echo -e "${RED}Please run as root (use sudo)${NC}"
-    exit 1
+# Root check
+if [ "${EUID}" -ne 0 ]; then
+  echo -e "${RED}Please run as root (use sudo)${NC}"; exit 1
 fi
 
 echo -e "${GREEN}✓ Running as root${NC}"
 
-# Update system
-echo -e "${YELLOW}📦 Updating system packages...${NC}"
+# Packages
+echo -e "${YELLOW}📦 Installing system packages...${NC}"
 apt-get update -qq
-apt-get install -y -qq curl wget git python3 python3-pip python3-venv nodejs npm nginx build-essential
+DEBIAN_FRONTEND=noninteractive apt-get install -y -qq curl wget git python3 python3-pip python3-venv nginx build-essential ca-certificates
 
-# Check Node.js version
-NODE_VERSION=$(node --version | cut -d'v' -f2 | cut -d'.' -f1)
-if [ "$NODE_VERSION" -lt "18" ]; then
-    echo -e "${YELLOW}⚠ Node.js version < 18, installing Node.js 18...${NC}"
-    curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
-    apt-get install -y -qq nodejs
-fi
-
-echo -e "${GREEN}✓ System packages installed${NC}"
-
-# Create app directory
-echo -e "${YELLOW}📁 Creating application directory...${NC}"
-mkdir -p ${APP_DIR}
-cd ${APP_DIR}
-
-# Clone or update repository
-if [ -d ".git" ]; then
-    echo -e "${YELLOW}📥 Repository exists, pulling latest...${NC}"
-    git pull origin main
+# Node.js 18+
+if command -v node >/dev/null 2>&1; then
+  NODE_MAJOR=$(node -v | sed 's/v//;s/\..*$//') || true
 else
-    echo -e "${YELLOW}📥 Cloning repository...${NC}"
-    echo -e "${YELLOW}For private repo, use SSH URL: git@github.com:username/hotmail-reader.git${NC}"
-    echo -e "${YELLOW}Or use HTTPS with token: https://token@github.com/username/hotmail-reader.git${NC}"
-    read -p "Enter your GitHub repository URL: " REPO_URL
-
-    if [ -z "$REPO_URL" ]; then
-        echo -e "${RED}Repository URL is required${NC}"
-        exit 1
-    fi
-
-    git clone ${REPO_URL} .
-    echo -e "${GREEN}✓ Repository cloned${NC}"
+  NODE_MAJOR=0
+fi
+if [ "${NODE_MAJOR}" -lt 18 ]; then
+  echo -e "${YELLOW}Installing Node.js 18...${NC}"
+  curl -fsSL https://deb.nodesource.com/setup_18.x | bash -
+  apt-get install -y -qq nodejs
 fi
 
-# Setup Backend
-echo -e "${YELLOW}🐍 Setting up Python backend...${NC}"
-cd ${APP_DIR}/api
+echo -e "${GREEN}✓ System ready${NC}"
 
-# Create virtual environment
-if [ ! -d ".venv" ]; then
-    python3 -m venv .venv
+# Create app dir
+mkdir -p "${APP_DIR}"
+cd "${APP_DIR}"
+
+# Acquire source code
+if [ -d .git ]; then
+  echo -e "${YELLOW}📥 Repo detected, pulling latest...${NC}"
+  git pull --rebase --autostash || true
+elif [ -n "${REPO_URL}" ]; then
+  echo -e "${YELLOW}📥 Cloning from REPO_URL...${NC}"
+  git clone "${REPO_URL}" .
+else
+  echo -e "${YELLOW}No git repo found and REPO_URL not set. Assuming files already present.${NC}"
 fi
 
-# Activate and install dependencies
-source .venv/bin/activate
-pip install --upgrade pip -q
-pip install -r requirements.txt -q
+# Backend setup
+echo -e "${YELLOW}🐍 Setting up backend (FastAPI)...${NC}"
+cd "${APP_DIR}/api"
+if [ ! -d .venv ]; then
+  python3 -m venv .venv
+fi
+"${APP_DIR}/api/.venv/bin/pip" -q install --upgrade pip
+"${APP_DIR}/api/.venv/bin/pip" -q install -r requirements.txt
 
-echo -e "${GREEN}✓ Backend dependencies installed${NC}"
-
-# Check if .env exists
-if [ ! -f ".env" ]; then
-    echo -e "${YELLOW}⚠ Backend .env file not found. Creating template...${NC}"
-    cat > .env << EOF
-# Required for production
-UI_ORIGIN=http://your-domain-or-ip
+# Ensure backend .env populated for production
+if [ -z "${DOMAIN}" ]; then
+  DOMAIN=$(hostname -I | awk '{print $1}')
+fi
+UI_ORIGIN_VALUE="http://${DOMAIN}"
+OAUTH_REDIRECT_URI_VALUE="http://${DOMAIN}/oauth/callback"
+if [ ! -f .env ]; then
+  cat > .env <<EOF
+UI_ORIGIN=${UI_ORIGIN_VALUE}
 NODE_ENV=production
-
-# Optional - Only needed if using OAuth flow (/oauth/authorize)
-# CLIENT_ID=your_client_id_here
-# OAUTH_REDIRECT_URI=http://your-domain-or-ip:8000/oauth/callback
-
-# Optional - Defaults are usually fine
+OAUTH_REDIRECT_URI=${OAUTH_REDIRECT_URI_VALUE}
+# Optional OAuth
+# CLIENT_ID=
+# GRAPH_CLIENT_SECRET=
 # GRAPH_TENANT=consumers
 # OUTLOOK_SCOPE=offline_access https://outlook.office.com/IMAP.AccessAsUser.All
 EOF
-    echo -e "${RED}⚠ Please edit ${APP_DIR}/api/.env with your actual values!${NC}"
-    echo -e "${YELLOW}Minimum required: UI_ORIGIN and NODE_ENV=production${NC}"
+else
+  # idempotently ensure required keys
+  grep -q '^UI_ORIGIN=' .env || echo "UI_ORIGIN=${UI_ORIGIN_VALUE}" >> .env
+  grep -q '^NODE_ENV=' .env || echo "NODE_ENV=production" >> .env
+  grep -q '^OAUTH_REDIRECT_URI=' .env || echo "OAUTH_REDIRECT_URI=${OAUTH_REDIRECT_URI_VALUE}" >> .env
 fi
 
-# Setup Frontend (Static export served by Nginx)
-echo -e "${YELLOW}⚛️  Setting up Next.js frontend (static export)...${NC}"
-cd ${APP_DIR}
+echo -e "${GREEN}✓ Backend ready${NC}"
 
-# Install dependencies (include dev deps for tailwind/postcss)
-echo -e "${YELLOW}📦 Installing frontend dependencies...${NC}"
-npm install
-
-# Configure frontend .env and ensure static export is enabled
-echo -e "${YELLOW}🛠  Configuring frontend environment...${NC}"
+# Frontend setup (Next.js static export)
+echo -e "${YELLOW}⚛️  Setting up frontend (Next.js)...${NC}"
+cd "${APP_DIR}"
+export HUSKY=0
+if [ -f package-lock.json ]; then npm ci --no-audit --no-fund; else npm install --no-audit --no-fund; fi
 echo "NEXT_PUBLIC_API_URL=/api" > .env.local
 
-# Ensure next.config.mjs enables static export (idempotent)
-if grep -q "output: 'export'" next.config.mjs; then
-  echo -e "${GREEN}Static export already enabled in next.config.mjs${NC}"
-else
-  # Try to uncomment the suggested lines if present; otherwise append settings
-  sed -i "s|// output: 'export'|output: 'export'|; s|// images: {|images: {|; s|//   unoptimized: true|  unoptimized: true|; s|// },|},|" next.config.mjs || true
+# Ensure static export enabled (best-effort, idempotent)
+if [ -f next.config.mjs ]; then
   if ! grep -q "output: 'export'" next.config.mjs; then
-    # Append minimal config
-    sed -i "s|export default nextConfig;|nextConfig.output='export';\nif(!nextConfig.images) nextConfig.images={};\nnextConfig.images.unoptimized=true;\n\nexport default nextConfig;|" next.config.mjs
+    sed -i "s|export default nextConfig;|nextConfig.output='export';\nif(!nextConfig.images) nextConfig.images={};\nnextConfig.images.unoptimized=true;\n\nexport default nextConfig;|" next.config.mjs || true
   fi
 fi
 
-# Build frontend (generates /out)
 echo -e "${YELLOW}🔨 Building frontend...${NC}"
-npm run build
+npm run -s build
+echo -e "${YELLOW}📤 Exporting static site...${NC}"
+npx --yes next export
+mkdir -p "${APP_DIR}/out"
+chown -R "${SERVICE_USER}:${SERVICE_USER}" "${APP_DIR}/out"
+chmod -R 755 "${APP_DIR}/out"
 
-echo -e "${GREEN}✓ Frontend built successfully (static)${NC}"
-
-# Explicit export to /out to be robust across environments
-echo -e "${YELLOW}📤 Exporting static site to /out...${NC}"
-npx next export || npx --yes next export
-
-# Ensure permissions for Nginx to read static files
-mkdir -p ${APP_DIR}/out
-chown -R ${SERVICE_USER}:${SERVICE_USER} ${APP_DIR}/out
-chmod -R 755 ${APP_DIR}/out
-
-# Create systemd service for backend
-echo -e "${YELLOW}⚙️  Creating systemd service...${NC}"
-cat > /etc/systemd/system/${APP_NAME}-api.service << EOF
+# systemd service for backend
+echo -e "${YELLOW}⚙️  Creating systemd service for API...${NC}"
+cat > "/etc/systemd/system/${APP_NAME}-api.service" <<EOF
 [Unit]
-Description=Hotmail Reader API Service
+Description=${APP_NAME} API (Uvicorn)
 After=network.target
 
 [Service]
@@ -158,96 +137,59 @@ Environment="PATH=${APP_DIR}/api/.venv/bin"
 Environment="PYTHONPATH=${APP_DIR}"
 ExecStart=${APP_DIR}/api/.venv/bin/python -m uvicorn api.main:app --host 0.0.0.0 --port ${BACKEND_PORT}
 Restart=always
-RestartSec=10
+RestartSec=5
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-# Enable and start service
 systemctl daemon-reload
-systemctl enable ${APP_NAME}-api.service
-systemctl restart ${APP_NAME}-api.service
+systemctl enable "${APP_NAME}-api.service"
+systemctl restart "${APP_NAME}-api.service"
+echo -e "${GREEN}✓ API service started${NC}"
 
-echo -e "${GREEN}✓ Backend service started${NC}"
-
-# Setup Nginx
+# Nginx config
 echo -e "${YELLOW}🌐 Configuring Nginx...${NC}"
-
-# Ask for domain
-if [ -z "$DOMAIN" ]; then
-    read -p "Enter your domain (or press Enter to use IP): " DOMAIN
-fi
-
-if [ -z "$DOMAIN" ]; then
-    DOMAIN="$(hostname -I | awk '{print $1}')"
-    echo -e "${YELLOW}Using IP: ${DOMAIN}${NC}"
-fi
-
-# Create systemd service for frontend (Next.js)
-# Create Nginx config: root domain -> static out/, /api -> backend (8000 with prefix strip)
-cat > /etc/nginx/sites-available/${APP_NAME} << EOF
+cat > "/etc/nginx/sites-available/${APP_NAME}" <<EOF
 server {
     listen 80;
     server_name ${DOMAIN} www.${DOMAIN};
 
+    # API proxy
     location /api/ {
         proxy_pass http://127.0.0.1:${BACKEND_PORT}/;
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
     }
 
+    # Static frontend
     root ${APP_DIR}/out;
     index index.html;
 
     location / {
-        try_files \$uri \$uri/ /index.html;
+        try_files $uri $uri/ /index.html;
     }
 }
 EOF
 
-# Enable site
-ln -sf /etc/nginx/sites-available/${APP_NAME} /etc/nginx/sites-enabled/
-rm -f /etc/nginx/sites-enabled/default 2>/dev/null || true
-
-# Test Nginx config
+ln -sf "/etc/nginx/sites-available/${APP_NAME}" "/etc/nginx/sites-enabled/${APP_NAME}"
+rm -f /etc/nginx/sites-enabled/default || true
 nginx -t
-
-# Restart Nginx
 systemctl restart nginx
-
 echo -e "${GREEN}✓ Nginx configured${NC}"
 
-# Set permissions
-echo -e "${YELLOW}🔐 Setting permissions...${NC}"
-chown -R ${SERVICE_USER}:${SERVICE_USER} ${APP_DIR}
-chmod -R 755 ${APP_DIR}
+# Permissions
+chown -R "${SERVICE_USER}:${SERVICE_USER}" "${APP_DIR}"
+chmod -R 755 "${APP_DIR}"
 
-echo -e "${GREEN}✓ Permissions set${NC}"
-
-# Summary
-echo -e "\n${GREEN}✅ Deployment completed successfully!${NC}\n"
-echo -e "${GREEN}Backend API (direct):${NC} http://${DOMAIN}:${BACKEND_PORT}"
+echo ""
+echo -e "${GREEN}✅ Deployment completed${NC}"
 echo -e "${GREEN}App URL:${NC} http://${DOMAIN}"
-echo -e "\n${YELLOW}⚠ IMPORTANT - Next steps:${NC}"
-echo -e "1. Edit ${APP_DIR}/api/.env:"
-echo -e "   - Set UI_ORIGIN to your actual domain/IP"
-echo -e "   - Set NODE_ENV=production"
-echo -e "   - (Optional) Add CLIENT_ID if using OAuth flow"
-echo -e ""
-echo -e "2. Restart backend after editing .env:"
-echo -e "   sudo systemctl restart ${APP_NAME}-api"
-echo -e ""
-echo -e "3. Check service status:"
-echo -e "   sudo systemctl status ${APP_NAME}-api"
-echo -e "   sudo journalctl -u ${APP_NAME}-api -f"
-echo -e ""
-echo -e "${YELLOW}To setup frontend with Nginx:${NC}"
-echo -e "Create Nginx config for ${APP_DIR}/out directory"
-echo -e ""
-echo -e "${YELLOW}For SSL (Let's Encrypt):${NC}"
-echo -e "sudo apt-get install certbot python3-certbot-nginx"
-echo -e "sudo certbot --nginx -d ${DOMAIN} -d api.${DOMAIN}"
+echo -e "${GREEN}API URL (direct):${NC} http://${DOMAIN}:${BACKEND_PORT}"
+echo ""
+echo -e "${YELLOW}Tip:${NC} Enable SSL with: sudo apt-get install -y certbot python3-certbot-nginx && sudo certbot --nginx -d ${DOMAIN}"
+
 
