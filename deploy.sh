@@ -22,7 +22,10 @@ APP_DIR=${APP_DIR:-"/opt/${APP_NAME}"}
 SERVICE_USER=${SERVICE_USER:-"www-data"}
 BACKEND_PORT=${BACKEND_PORT:-8000}
 DOMAIN=${DOMAIN:-""}
-REPO_URL=${REPO_URL:-""}
+REPO_URL=${REPO_URL:-"https://github.com/magnificodev/hotmail-reader.git"}
+GIT_BRANCH=${GIT_BRANCH:-"main"}
+AUTO_SSL=${AUTO_SSL:-"0"}
+CERTBOT_EMAIL=${CERTBOT_EMAIL:-""}
 
 # Root check
 if [ "${EUID}" -ne 0 ]; then
@@ -57,10 +60,12 @@ cd "${APP_DIR}"
 # Acquire source code
 if [ -d .git ]; then
   echo -e "${YELLOW}📥 Repo detected, pulling latest...${NC}"
-  git pull --rebase --autostash || true
+  git fetch origin "${GIT_BRANCH}" || true
+  git checkout "${GIT_BRANCH}" || true
+  git pull --rebase --autostash origin "${GIT_BRANCH}" || true
 elif [ -n "${REPO_URL}" ]; then
   echo -e "${YELLOW}📥 Cloning from REPO_URL...${NC}"
-  git clone "${REPO_URL}" .
+  git clone --branch "${GIT_BRANCH}" --single-branch "${REPO_URL}" .
 else
   echo -e "${YELLOW}No git repo found and REPO_URL not set. Assuming files already present.${NC}"
 fi
@@ -181,6 +186,18 @@ nginx -t
 systemctl restart nginx
 echo -e "${GREEN}✓ Nginx configured${NC}"
 
+# Optional: Automatic SSL (Let's Encrypt) if DOMAIN provided and AUTO_SSL=1
+if [ "${AUTO_SSL}" = "1" ] && [ -n "${DOMAIN}" ]; then
+  echo -e "${YELLOW}🔐 Enabling HTTPS with Let's Encrypt...${NC}"
+  apt-get install -y -qq certbot python3-certbot-nginx || true
+  if [ -n "${CERTBOT_EMAIL}" ]; then
+    certbot --nginx -d "${DOMAIN}" --non-interactive --agree-tos -m "${CERTBOT_EMAIL}" || true
+  else
+    certbot --nginx -d "${DOMAIN}" --non-interactive --agree-tos --register-unsafely-without-email || true
+  fi
+  systemctl reload nginx || true
+fi
+
 # Permissions
 chown -R "${SERVICE_USER}:${SERVICE_USER}" "${APP_DIR}"
 chmod -R 755 "${APP_DIR}"
@@ -190,6 +207,6 @@ echo -e "${GREEN}✅ Deployment completed${NC}"
 echo -e "${GREEN}App URL:${NC} http://${DOMAIN}"
 echo -e "${GREEN}API URL (direct):${NC} http://${DOMAIN}:${BACKEND_PORT}"
 echo ""
-echo -e "${YELLOW}Tip:${NC} Enable SSL with: sudo apt-get install -y certbot python3-certbot-nginx && sudo certbot --nginx -d ${DOMAIN}"
+echo -e "${YELLOW}Tip:${NC} Auto SSL: set AUTO_SSL=1 CERTBOT_EMAIL=you@example.com in the deploy command"
 
 
