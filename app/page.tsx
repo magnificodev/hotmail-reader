@@ -5,18 +5,21 @@ import { createPortal } from "react-dom";
 import { Button } from "@/components/ui/button";
 import { Mail, ClipboardPaste, Loader2, FileText, Code } from "lucide-react";
 import { toast } from "sonner";
+import { API_ENDPOINTS, apiRequest } from "./lib/api";
+import { ITEMS_PER_PAGE, MAX_PAGE_SIZE, OTP_BUFFER_MULTIPLIER, POKEMON_FILTER_EMAIL, MESSAGES } from "./lib/constants";
+import type { EmailMessage, PageResult, MessageBodyResponse, DevCredResponse } from "./lib/types";
 
 export default function Page() {
   const [credString, setCredString] = useState("");
   // simplified state
   const [loading, setLoading] = useState(false);
-  const [items, setItems] = useState<Array<{ id: string; from_: string; to: string[]; date: string; subject: string; content: string }>>([]);
+  const [items, setItems] = useState<EmailMessage[]>([]);
   const [openId, setOpenId] = useState<string | null>(null);
   const [htmlMap, setHtmlMap] = useState<Record<string, string>>({}); // Cache HTML đã tải
   const [loadingHtml, setLoadingHtml] = useState<Record<string, boolean>>({});
   const [viewMode, setViewMode] = useState<Record<string, "text" | "html">>({}); // text hoặc html
   const [currentPage, setCurrentPage] = useState(1);
-  const itemsPerPage = 15;
+  const itemsPerPage = ITEMS_PER_PAGE;
   const [pageToken, setPageToken] = useState<string | null>(null); // Token cho trang tiếp theo
   const [hasMore, setHasMore] = useState(true); // Còn trang nào không
   const [loadingMore, setLoadingMore] = useState(false); // Đang load thêm
@@ -138,7 +141,7 @@ export default function Page() {
   async function copyToClipboard(text: string) {
     try {
       await navigator.clipboard.writeText(text);
-      toast.success("Đã copy OTP vào clipboard");
+      toast.success(MESSAGES.SUCCESS_COPY);
     } catch (e) {
       // Fallback
       try {
@@ -148,9 +151,9 @@ export default function Page() {
         ta.select();
         document.execCommand("copy");
         ta.remove();
-        toast.success("Đã copy OTP vào clipboard");
+        toast.success(MESSAGES.SUCCESS_COPY);
       } catch {
-        toast.error("Không copy được OTP");
+        toast.error(MESSAGES.ERROR_COPY);
       }
     }
   }
@@ -172,14 +175,14 @@ export default function Page() {
   }
 
   function showErrorToast(context: string, status: number, payload: string) {
-    let message = "Đã xảy ra lỗi không xác định";
+    let message = MESSAGES.ERROR_UNKNOWN;
     try {
       const js = JSON.parse(payload);
       if (js?.detail) message = String(js.detail);
     } catch {
       if (payload) message = payload;
     }
-    if (status === 0) message = "Không thể kết nối máy chủ";
+    if (status === 0) message = MESSAGES.ERROR_SERVER;
     toast.error(`${context}: ${message}`);
   }
   const [mounted, setMounted] = useState(false);
@@ -204,42 +207,38 @@ export default function Page() {
   async function fetchMessages() {
     setLoading(true);
     try {
-      const res = await fetch("http://localhost:8000/messages", {
+      const data = await apiRequest<PageResult>(API_ENDPOINTS.MESSAGES, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
           credString, 
           page_size: itemsPerPage, 
           include_body: true,
-          from_: filterFromPokemon ? "info@pokemoncenter-online.com" : undefined,
+          from_: filterFromPokemon ? POKEMON_FILTER_EMAIL : undefined,
         }),
       });
-      if (!res.ok) {
-        const txt = await res.text();
-        showErrorToast("Lỗi khi đọc mail", res.status, txt);
-        return;
-      }
-          const data = await res.json();
-          const items = (data.items || []).map((x: any) => ({
-            id: String(x.id ?? ""),
-            from_: String(x.from_ ?? ""),
-            to: Array.isArray(x.to) ? x.to : [],
-            date: String(x.date ?? ""),
-            subject: String(x.subject ?? ""),
-            content: String(x.content ?? ""),
-          }));
-          
-          const count = items.length;
-          toast.success(`Đã tải ${count} email`);
-          if (process.env.NODE_ENV === "development") console.log("/messages response", { count, items: items.slice(0, 3), total: data.total });
-          
-          // Reset data khi fetch mới
-          setItems(items);
-          setPageToken(data.next_page_token || null);
-          setHasMore(!!data.next_page_token);
-          setCurrentPage(1); // Reset to first page when loading new data
-          setAppliedFilter(filterFromPokemon);
-          setTotalEmails(data.total ?? null);
+      
+      const items: EmailMessage[] = (data.items || []).map((x) => ({
+        id: String(x.id ?? ""),
+        from_: String(x.from_ ?? ""),
+        to: Array.isArray(x.to) ? x.to : [],
+        date: String(x.date ?? ""),
+        subject: String(x.subject ?? ""),
+        content: String(x.content ?? ""),
+      }));
+      
+      const count = items.length;
+      toast.success(`Đã tải ${count} email`);
+      if (process.env.NODE_ENV === "development") console.log("/messages response", { count, items: items.slice(0, 3), total: data.total });
+      
+      // Reset data khi fetch mới
+      setItems(items);
+      setPageToken(data.next_page_token || null);
+      setHasMore(!!data.next_page_token);
+      setCurrentPage(1); // Reset to first page when loading new data
+      setAppliedFilter(filterFromPokemon);
+      setTotalEmails(data.total ?? null);
+    } catch (error: any) {
+      showErrorToast("Lỗi khi đọc mail", error.status || 0, error.text || String(error));
     } finally {
       setLoading(false);
     }
@@ -268,7 +267,7 @@ export default function Page() {
       
       let estimatedPageSize: number;
       if (filterWithOtp) {
-        estimatedPageSize = Math.min(itemsPerPage * 3, 50);
+        estimatedPageSize = Math.min(itemsPerPage * OTP_BUFFER_MULTIPLIER, MAX_PAGE_SIZE);
       } else if (totalEmails !== null) {
         const remainingEmails = totalEmails - items.length;
         const neededForCurrentPage = neededItems - availableCount;
@@ -284,27 +283,18 @@ export default function Page() {
         }
         
         try {
-          const res = await fetch("http://localhost:8000/messages", {
+          const data = await apiRequest<PageResult>(API_ENDPOINTS.MESSAGES, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ 
               credString, 
               page_size: estimatedPageSize, 
               include_body: true,
               page_token: currentToken,
-              from_: filterFromPokemon ? "info@pokemoncenter-online.com" : undefined,
+              from_: filterFromPokemon ? POKEMON_FILTER_EMAIL : undefined,
             }),
           });
           
-          if (!res.ok) {
-            const txt = await res.text();
-            showErrorToast("Lỗi khi tải thêm email", res.status, txt);
-            setLoadingMore(false);
-            return;
-          }
-          
-          const data = await res.json();
-          const newItems = (data.items || []).map((x: any) => ({
+          const newItems: EmailMessage[] = (data.items || []).map((x) => ({
             id: String(x.id ?? ""),
             from_: String(x.from_ ?? ""),
             to: Array.isArray(x.to) ? x.to : [],
@@ -327,8 +317,8 @@ export default function Page() {
           setHasMore(true);
           setItems((prev) => [...prev, ...newItems]);
           setLoadingMore(false);
-        } catch (e) {
-          showErrorToast("Lỗi khi tải thêm email", 0, String(e));
+        } catch (error: any) {
+          showErrorToast("Lỗi khi tải thêm email", error.status || 0, error.text || String(error));
           setLoadingMore(false);
         }
       };
@@ -339,10 +329,16 @@ export default function Page() {
   }, [currentPage, filteredItems.length, items.length, hasMore, loadingMore, reloadingFilter, pageToken, appliedFilter, filterFromPokemon, filterWithOtp]);
 
   async function useDevCred() {
-    const res = await fetch("http://localhost:8000/dev/cred", { method: "GET" });
-    if (res.ok) {
-      const data = await res.json();
+    // Only work in development
+    if (process.env.NODE_ENV !== "development") {
+      return;
+    }
+    try {
+      const data = await apiRequest<DevCredResponse>(API_ENDPOINTS.DEV_CRED, { method: "GET" });
       if (data.credString) setCredString(data.credString);
+    } catch (error: any) {
+      // Silently fail for dev endpoint
+      console.warn("Failed to fetch dev cred:", error);
     }
   }
 
@@ -359,25 +355,18 @@ export default function Page() {
     setLoadingHtml((prev) => ({ ...prev, [id]: true }));
     
     try {
-      const res = await fetch("http://localhost:8000/message", {
+      const data = await apiRequest<MessageBodyResponse>(API_ENDPOINTS.MESSAGE, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ credString, id }),
       });
-      if (!res.ok) {
-        const txt = await res.text();
-        showErrorToast("Lỗi khi tải HTML", res.status, txt);
-        setLoadingHtml((prev) => ({ ...prev, [id]: false }));
-        return;
-      }
-      const data = await res.json();
+      
       setHtmlMap((prev) => {
         if (prev[id]) return prev;
         return { ...prev, [id]: data.html || "" };
       });
       setViewMode((prev) => ({ ...prev, [id]: "html" }));
-    } catch (e) {
-      showErrorToast("Lỗi khi tải HTML", 0, String(e));
+    } catch (error: any) {
+      showErrorToast("Lỗi khi tải HTML", error.status || 0, error.text || String(error));
     } finally {
       setLoadingHtml((prev) => ({ ...prev, [id]: false }));
     }
@@ -431,24 +420,16 @@ export default function Page() {
         setTotalEmails(null);
         setReloadingFilter(true);
       
-      fetch("http://localhost:8000/messages", {
+      apiRequest<PageResult>(API_ENDPOINTS.MESSAGES, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
           credString, 
           page_size: itemsPerPage, 
           include_body: true,
-          from_: filterFromPokemon ? "info@pokemoncenter-online.com" : undefined,
+          from_: filterFromPokemon ? POKEMON_FILTER_EMAIL : undefined,
         }),
-      }).then(async (res) => {
-        if (!res.ok) {
-          const txt = await res.text();
-          showErrorToast("Lỗi khi đọc mail", res.status, txt);
-          setReloadingFilter(false);
-          return;
-        }
-        const data = await res.json();
-        const newItems = (data.items || []).map((x: any) => ({
+      }).then((data) => {
+        const newItems: EmailMessage[] = (data.items || []).map((x) => ({
           id: String(x.id ?? ""),
           from_: String(x.from_ ?? ""),
           to: Array.isArray(x.to) ? x.to : [],
@@ -458,14 +439,14 @@ export default function Page() {
         }));
         const count = newItems.length;
         toast.success(`Đã tải ${count} email`);
-            setItems(newItems);
-            setPageToken(data.next_page_token || null);
-            setHasMore(!!data.next_page_token);
-            setAppliedFilter(filterFromPokemon);
-            setTotalEmails(data.total ?? null);
-            setReloadingFilter(false);
-      }).catch((e) => {
-        showErrorToast("Lỗi khi đọc mail", 0, String(e));
+        setItems(newItems);
+        setPageToken(data.next_page_token || null);
+        setHasMore(!!data.next_page_token);
+        setAppliedFilter(filterFromPokemon);
+        setTotalEmails(data.total ?? null);
+        setReloadingFilter(false);
+      }).catch((error: any) => {
+        showErrorToast("Lỗi khi đọc mail", error.status || 0, error.text || String(error));
         setReloadingFilter(false);
       });
     }
@@ -473,9 +454,7 @@ export default function Page() {
   }, [filterFromPokemon]);
 
 
-  type Item = { id: string; from_: string; to: string[]; date: string; subject: string; content: string };
-
-  const Row = memo(function Row({ m, idx, startIndex, onOpenPopup }: { m: Item; idx: number; startIndex: number; onOpenPopup: (id: string) => void }) {
+  const Row = memo(function Row({ m, idx, startIndex, onOpenPopup }: { m: EmailMessage; idx: number; startIndex: number; onOpenPopup: (id: string) => void }) {
     const otp = extractOtp(m.subject + "\n" + m.content) || "";
     return (
       <tr className="border-b hover:bg-muted/40">
@@ -528,7 +507,7 @@ export default function Page() {
     onToggleView,
   }: {
     openId: string | null;
-    items: Item[];
+    items: EmailMessage[];
     viewMode: Record<string, "text" | "html">;
     htmlMap: Record<string, string>;
     loadingHtml: Record<string, boolean>;
@@ -615,7 +594,7 @@ export default function Page() {
                 }}
               />
               <span className="text-sm">
-                Chỉ hiển thị email từ <span className="text-primary font-medium">info@pokemoncenter-online.com</span>
+                Chỉ hiển thị email từ <span className="text-primary font-medium">{POKEMON_FILTER_EMAIL}</span>
               </span>
             </label>
             <label className="flex items-center gap-2 cursor-pointer">
@@ -637,16 +616,18 @@ export default function Page() {
             </label>
           </div>
           <div className="flex gap-2">
-            <Button variant="secondary" onClick={useDevCred}>
-              <ClipboardPaste className="mr-2 h-4 w-4" /> Dán dữ liệu mẫu (DEV)
-            </Button>
+            {process.env.NODE_ENV === "development" && (
+              <Button variant="secondary" onClick={useDevCred}>
+                <ClipboardPaste className="mr-2 h-4 w-4" /> Dán dữ liệu mẫu (DEV)
+              </Button>
+            )}
             <Button 
               onClick={() => fetchMessages()} 
               disabled={loading || !credString.trim()}
             >
               {loading ? (
                 <>
-                  <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Đang tải...
+                  <Loader2 className="mr-2 h-4 w-4 animate-spin" /> {MESSAGES.LOADING}
                 </>
               ) : (
                 <>
@@ -679,7 +660,7 @@ export default function Page() {
                   <div className="flex flex-col items-center justify-center gap-2">
                     <div className="flex items-center gap-2">
                       <Loader2 className="h-4 w-4 animate-spin" />
-                      <span>{reloadingFilter ? "Đang tải email..." : "Đang tải thêm email..."}</span>
+                      <span>{reloadingFilter ? MESSAGES.LOADING_EMAILS : MESSAGES.LOADING_MORE}</span>
                     </div>
                     {loadingMore && totalEmails !== null && (
                       <div className="text-xs text-muted-foreground">
@@ -694,10 +675,10 @@ export default function Page() {
                   <tr>
                     <td className="py-8 px-4 text-center text-muted-foreground" colSpan={5}>
                       {items.length === 0 
-                        ? "Chưa có dữ liệu. Nhấn \"Đọc mail\" để tải."
+                        ? MESSAGES.NO_DATA
                         : filterWithOtp 
-                          ? "Không có email nào có OTP."
-                          : "Chưa có dữ liệu."}
+                          ? MESSAGES.NO_OTP_EMAILS
+                          : MESSAGES.NO_DATA}
                     </td>
                   </tr>
                 )}

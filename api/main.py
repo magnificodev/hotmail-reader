@@ -1,14 +1,12 @@
 from __future__ import annotations
 
-import os
 import re
 from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
-from dotenv import load_dotenv
 import secrets
 import hashlib
 import base64
@@ -22,24 +20,22 @@ from .credentials import parse_cred_string, select_provider
 from .outlook_imap import exchange_refresh_token_outlook, imap_xoauth_list, imap_xoauth_get_body, imap_xoauth_fetch_bodies, imap_xoauth_list_and_bodies
 from .otp_utils import html_to_text, extract_otp_from_text, within_window
 from .models import EmailMessage, PageResult
-
-
-# Load env from project root and api/.env explicitly
-load_dotenv()
-try:
-    from pathlib import Path
-    load_dotenv(Path(__file__).with_name(".env"))
-except Exception:
-    pass
+from .config import (
+    get_ui_origins, get_client_id, get_client_secret, get_tenant,
+    get_graph_scope, get_oauth_redirect_uri, is_development, get_test_cred_string
+)
+from .constants import (
+    DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE,
+    DEFAULT_OTP_TOP_EMAILS, DEFAULT_TIME_WINDOW_MINUTES,
+    STATE_TTL_SECONDS, TOKEN_EXPIRY_BUFFER_SECONDS,
+    ERROR_IMAP, ERROR_INVALID_CREDENTIALS
+)
 
 app = FastAPI(title="Hotmail Reader API")
 
-origins = [
-    os.environ.get("UI_ORIGIN", "http://localhost:3000"),
-]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=origins,
+    allow_origins=get_ui_origins(),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -53,7 +49,7 @@ def health() -> dict:
 class MessagesRequest(BaseModel):
     credString: str
     from_: Optional[str] = None
-    page_size: Optional[int] = 20
+    page_size: Optional[int] = Field(default=DEFAULT_PAGE_SIZE, ge=MIN_PAGE_SIZE, le=MAX_PAGE_SIZE)
     page_token: Optional[str] = None
     include_body: Optional[bool] = False
 
@@ -62,24 +58,40 @@ class OtpRequest(BaseModel):
     credString: str
     from_: Optional[str] = None
     regex: Optional[str] = None
-    time_window_minutes: Optional[int] = 30
+    time_window_minutes: Optional[int] = Field(default=DEFAULT_TIME_WINDOW_MINUTES, ge=1)
 
 
 class MessageBodyRequest(BaseModel):
     credString: str
-    id: str  # IMAP UID
+    id: str = Field(..., description="IMAP UID")
 
 
 @app.get("/dev/cred")
 def dev_cred() -> Dict[str, Optional[str]]:
-    if os.environ.get("NODE_ENV") != "development":
+    if not is_development():
         return {"credString": None}
-    return {"credString": os.environ.get("TEST_CRED_STRING")}
+    return {"credString": get_test_cred_string()}
 
 
 # ===== OAuth 2.0 Authorization Code Flow with PKCE (S256) =====
 _STATE_STORE: Dict[str, Dict[str, Any]] = {}
 _TOKEN_CACHE: Dict[str, Dict[str, Any]] = {}
+
+
+def _cleanup_expired_states() -> None:
+    """Remove expired states from STATE_STORE."""
+    now = time.time()
+    expired = [k for k, v in _STATE_STORE.items() if now - v.get("ts", 0) > STATE_TTL_SECONDS]
+    for k in expired:
+        _STATE_STORE.pop(k, None)
+
+
+def _cleanup_expired_tokens() -> None:
+    """Remove expired tokens from TOKEN_CACHE."""
+    now = time.time()
+    expired = [k for k, v in _TOKEN_CACHE.items() if v.get("expires_at", 0) - TOKEN_EXPIRY_BUFFER_SECONDS <= now]
+    for k in expired:
+        _TOKEN_CACHE.pop(k, None)
 
 
 def _b64url(data: bytes) -> str:
@@ -98,12 +110,15 @@ def _code_challenge_s256(verifier: str) -> str:
 
 @app.get("/oauth/authorize")
 def oauth_authorize() -> RedirectResponse:
-    client_id = os.environ.get("CLIENT_ID") or os.environ.get("GRAPH_CLIENT_ID")
+    client_id = get_client_id()
     if not client_id:
         raise HTTPException(status_code=400, detail="Missing CLIENT_ID in env")
-    tenant = os.environ.get("GRAPH_TENANT", "consumers")
-    scope = os.environ.get("GRAPH_SCOPE", "offline_access Mail.Read")
-    redirect_uri = os.environ.get("OAUTH_REDIRECT_URI", "http://localhost:8000/oauth/callback")
+    tenant = get_tenant()
+    scope = get_graph_scope()
+    redirect_uri = get_oauth_redirect_uri()
+
+    # Cleanup expired states before creating new one
+    _cleanup_expired_states()
 
     state = _b64url(secrets.token_bytes(24))
     verifier = _gen_code_verifier()
@@ -135,16 +150,25 @@ async def oauth_callback(request: Request) -> JSONResponse:
     if not code or not state:
         raise HTTPException(status_code=400, detail="missing code/state")
 
+    # Cleanup expired states first
+    _cleanup_expired_states()
+    
     entry = _STATE_STORE.pop(state, None)
     if not entry:
         raise HTTPException(status_code=400, detail="state_not_found_or_expired")
+    
+    # Check if state is expired
+    now = time.time()
+    if now - entry.get("ts", 0) > STATE_TTL_SECONDS:
+        raise HTTPException(status_code=400, detail="state_expired")
+    
     verifier: str = entry["verifier"]
 
-    client_id = os.environ.get("CLIENT_ID") or os.environ.get("GRAPH_CLIENT_ID")
-    tenant = os.environ.get("GRAPH_TENANT", "consumers")
-    scope = os.environ.get("GRAPH_SCOPE", "offline_access Mail.Read")
-    redirect_uri = os.environ.get("OAUTH_REDIRECT_URI", "http://localhost:8000/oauth/callback")
-    client_secret = os.environ.get("GRAPH_CLIENT_SECRET")
+    client_id = get_client_id()
+    tenant = get_tenant()
+    scope = get_graph_scope()
+    redirect_uri = get_oauth_redirect_uri()
+    client_secret = get_client_secret()
 
     token_url = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
     data = {
@@ -187,10 +211,13 @@ def _cache_key(email: str, client_id: Optional[str], refresh_token: Optional[str
 
 
 async def get_outlook_access_token(email: str, client_id: str, refresh_token: str) -> str:
+    # Cleanup expired tokens before checking cache
+    _cleanup_expired_tokens()
+    
     now = time.time()
     key = _cache_key(email, client_id, refresh_token)
     entry = _TOKEN_CACHE.get(key)
-    if entry and entry.get("expires_at", 0) - 60 > now:
+    if entry and entry.get("expires_at", 0) - TOKEN_EXPIRY_BUFFER_SECONDS > now:
         return entry["access_token"]
     access_token, expires_in, new_refresh = await exchange_refresh_token_outlook(client_id, refresh_token)
     _TOKEN_CACHE[key] = {"access_token": access_token, "expires_at": now + int(expires_in)}
@@ -236,12 +263,48 @@ def _extract_email_content(msg: pyemail.message.Message) -> str:
     return content
 
 
+def _extract_email_text_and_html(msg: pyemail.message.Message) -> tuple[str, str]:
+    """Extract both text and HTML content from email message."""
+    text = ""
+    html = ""
+    if msg.is_multipart():
+        for part in msg.walk():
+            ctype = part.get_content_type()
+            payload = part.get_payload(decode=True) or b""
+            if ctype == "text/plain" and not text:
+                raw = payload.decode(errors="ignore")
+                text = re.sub(r"\s+", " ", raw).strip()
+            if ctype == "text/html" and not html:
+                html = payload.decode(errors="ignore")
+    else:
+        ctype = msg.get_content_type()
+        payload = msg.get_payload(decode=True) or b""
+        if ctype == "text/plain":
+            raw = payload.decode(errors="ignore")
+            text = re.sub(r"\s+", " ", raw).strip()
+        elif ctype == "text/html":
+            html = payload.decode(errors="ignore")
+    if not text and html:
+        text = html_to_text(html)
+    return text, html
+
+
+def _sanitize_error_message(error: Exception, is_production: bool = False) -> str:
+    """Sanitize error messages for client responses."""
+    if is_production:
+        # In production, only return generic error type
+        return f"{ERROR_IMAP}: {type(error).__name__}"
+    # In development, include more details
+    error_msg = str(error)[:200]  # Limit length
+    return f"{ERROR_IMAP}: {type(error).__name__}: {error_msg}"
+
+
 @app.post("/messages")
 async def messages(req: MessagesRequest) -> PageResult:
     creds = parse_cred_string(req.credString)
     provider = select_provider(creds)
     from_filter = req.from_
-    size = max(1, min(req.page_size or 20, 50))
+    size = max(MIN_PAGE_SIZE, min(req.page_size or DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE))
 
     if provider == "outlook_imap":
         try:
@@ -279,9 +342,10 @@ async def messages(req: MessagesRequest) -> PageResult:
                     })
             return {"items": items, "next_page_token": str(next_uid) if next_uid else None, "total": total_count if page_token_int is None else None}
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Outlook IMAP error: {type(e).__name__}: {str(e)[:200]}")
+            detail = _sanitize_error_message(e, not is_development())
+            raise HTTPException(status_code=400, detail=detail)
 
-    raise HTTPException(status_code=400, detail="Invalid credentials: need refresh_token+client_id (Outlook IMAP)")
+    raise HTTPException(status_code=400, detail=ERROR_INVALID_CREDENTIALS)
 
 
 @app.post("/otp")
@@ -289,15 +353,24 @@ async def otp(req: OtpRequest) -> Dict[str, Any]:
     creds = parse_cred_string(req.credString)
     provider = select_provider(creds)
     from_filter = req.from_
-    time_window = req.time_window_minutes or 30
+    time_window = req.time_window_minutes or DEFAULT_TIME_WINDOW_MINUTES
 
     if provider == "outlook_imap":
         try:
             token = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "")
-            # Lấy top 5 UID mới nhất theo filter
-            raw, _ = imap_xoauth_list(creds.email, token, from_filter, 5, None)
+            # Optimize: Use batch fetch instead of individual calls
+            raw, _ = imap_xoauth_list(creds.email, token, from_filter, DEFAULT_OTP_TOP_EMAILS, None)
+            if not raw:
+                return {"otp": None}
+            
+            # Batch fetch bodies in one connection
+            uids = [uid for uid, _ in raw]
+            bodies_map = imap_xoauth_fetch_bodies(creds.email, token, uids)
+            
             for uid, _hdr in raw:
-                body_bytes = imap_xoauth_get_body(creds.email, token, uid)
+                if uid not in bodies_map:
+                    continue
+                body_bytes = bodies_map[uid]
                 msg = pyemail.message_from_bytes(body_bytes)
                 subject = msg.get("Subject", "")
                 date = msg.get("Date", "")
@@ -308,9 +381,10 @@ async def otp(req: OtpRequest) -> Dict[str, Any]:
                     return {"otp": code, "emailId": str(uid), "subject": subject, "date": date}
             return {"otp": None}
         except Exception as e:
-            raise HTTPException(status_code=400, detail=f"Outlook IMAP error: {type(e).__name__}: {str(e)[:200]}")
+            detail = _sanitize_error_message(e, not is_development())
+            raise HTTPException(status_code=400, detail=detail)
 
-    raise HTTPException(status_code=400, detail="Invalid credentials: need refresh_token+client_id (Outlook IMAP)")
+    raise HTTPException(status_code=400, detail=ERROR_INVALID_CREDENTIALS)
 
 
 @app.post("/message")
@@ -318,7 +392,7 @@ async def message_body(req: MessageBodyRequest) -> Dict[str, Any]:
     creds = parse_cred_string(req.credString)
     provider = select_provider(creds)
     if provider != "outlook_imap":
-        raise HTTPException(status_code=400, detail="Invalid credentials: need refresh_token+client_id (Outlook IMAP)")
+        raise HTTPException(status_code=400, detail=ERROR_INVALID_CREDENTIALS)
     try:
         token = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "")
         body_bytes = imap_xoauth_get_body(creds.email, token, int(req.id))
@@ -327,31 +401,12 @@ async def message_body(req: MessageBodyRequest) -> Dict[str, Any]:
         date = msg.get("Date", "")
         from_raw = str(make_header(decode_header(msg.get("From", ""))))
         to_raw = msg.get("To", "") or ""
-        # Extract text and html
-        text = ""
-        html = ""
-        if msg.is_multipart():
-            for part in msg.walk():
-                ctype = part.get_content_type()
-                payload = part.get_payload(decode=True) or b""
-                if ctype == "text/plain" and not text:
-                    raw = payload.decode(errors="ignore")
-                    text = re.sub(r"\s+", " ", raw).strip()
-                if ctype == "text/html" and not html:
-                    html = payload.decode(errors="ignore")
-        else:
-            ctype = msg.get_content_type()
-            payload = msg.get_payload(decode=True) or b""
-            if ctype == "text/plain":
-                raw = payload.decode(errors="ignore")
-                text = re.sub(r"\s+", " ", raw).strip()
-            elif ctype == "text/html":
-                html = payload.decode(errors="ignore")
-        if not text and html:
-            text = html_to_text(html)
+        # Extract text and html using shared function
+        text, html = _extract_email_text_and_html(msg)
         return {"id": req.id, "subject": subject, "date": date, "from": from_raw, "to": to_raw, "text": text, "html": html}
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Outlook IMAP error: {type(e).__name__}: {str(e)[:200]}")
+        detail = _sanitize_error_message(e, not is_development())
+        raise HTTPException(status_code=400, detail=detail)
 
 
 if __name__ == "__main__":
