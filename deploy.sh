@@ -174,15 +174,23 @@ if [ "${SWAP_ENABLE}" = "1" ] && ! swapon --show | grep -q swapfile; then
 fi
 
 # Frontend setup (Next.js static export)
+SKIP_FRONTEND=${SKIP_FRONTEND:-"0"}
 echo -e "${YELLOW}⚛️  Setting up frontend (Next.js)...${NC}"
 cd "${APP_DIR}"
 export HUSKY=0
-# Prefer ci if lock exists, fall back to install on failure (e.g., OOM kill)
-if [ -f package-lock.json ]; then
-  (npm ci --no-audit --no-fund) || (echo -e "${YELLOW}npm ci failed, falling back to npm install...${NC}" && npm install --no-audit --no-fund)
+
+FRONTEND_READY=0
+if [ "${SKIP_FRONTEND}" = "1" ]; then
+  echo -e "${YELLOW}Skipping frontend installation/build as requested (SKIP_FRONTEND=1).${NC}"
 else
-  npm install --no-audit --no-fund
+  if [ -f package-lock.json ]; then
+    (npm ci --no-audit --no-fund) || (echo -e "${YELLOW}npm ci failed, falling back to npm install...${NC}" && npm install --no-audit --no-fund) || true
+  else
+    npm install --no-audit --no-fund || true
+  fi
+  if [ -d node_modules ]; then FRONTEND_READY=1; fi
 fi
+
 echo "NEXT_PUBLIC_API_URL=/api" > .env.local
 
 # Ensure static export enabled (best-effort, idempotent)
@@ -192,17 +200,22 @@ if [ -f next.config.mjs ]; then
   fi
 fi
 
-echo -e "${YELLOW}🔨 Building frontend...${NC}"
-if ! npm run -s build; then
-  echo -e "${RED}Frontend build failed. Continuing to configure API and Nginx. UI may be unavailable.${NC}"
-fi
-echo -e "${YELLOW}📤 Exporting static site...${NC}"
-if ! npx --yes next export; then
-  echo -e "${YELLOW}Export failed; ensuring out/ exists so Nginx still starts.${NC}"
-  mkdir -p "${APP_DIR}/out"
+mkdir -p "${APP_DIR}/out"
+if [ "${FRONTEND_READY}" = "1" ] && [ "${SKIP_FRONTEND}" != "1" ]; then
+  echo -e "${YELLOW}🔨 Building frontend...${NC}"
+  if ! npm run -s build; then
+    echo -e "${RED}Frontend build failed. Continuing to configure API and Nginx. UI may be unavailable.${NC}"
+  fi
+  echo -e "${YELLOW}📤 Exporting static site...${NC}"
+  if ! npx --yes next export; then
+    echo -e "${YELLOW}Export failed; writing placeholder index.html so Nginx still serves.${NC}"
+    echo "<html><body><h1>Build pending</h1></body></html>" > "${APP_DIR}/out/index.html"
+  fi
+else
+  echo -e "${YELLOW}Skipping build/export due to missing node_modules or SKIP_FRONTEND=1. Writing placeholder UI.${NC}"
   echo "<html><body><h1>Build pending</h1></body></html>" > "${APP_DIR}/out/index.html"
 fi
-mkdir -p "${APP_DIR}/out"
+
 chown -R "${SERVICE_USER}:${SERVICE_USER}" "${APP_DIR}/out"
 chmod -R 755 "${APP_DIR}/out"
 
