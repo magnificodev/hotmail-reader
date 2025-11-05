@@ -257,8 +257,15 @@ export default function Page() {
     const neededItems = currentPage * itemsPerPage;
     const availableCount = filterWithOtp ? filteredItems.length : items.length;
     
+    // If we know totalEmails, avoid over-fetching on the last page or when mailbox has < itemsPerPage
+    if (totalEmails !== null) {
+      const remaining = totalEmails - items.length;
+      if (remaining <= 0) return; // nothing left to fetch
+      if (startIndex >= totalEmails) return; // page beyond total
+    }
+
     const needMoreData = (
-      availableCount < neededItems || 
+      availableCount < neededItems ||
       (filterWithOtp && itemsForCurrentPage < itemsPerPage)
     ) && hasMore && !loadingMore && !reloadingFilter && pageToken;
     
@@ -269,9 +276,10 @@ export default function Page() {
       if (filterWithOtp) {
         estimatedPageSize = Math.min(itemsPerPage * OTP_BUFFER_MULTIPLIER, MAX_PAGE_SIZE);
       } else if (totalEmails !== null) {
-        const remainingEmails = totalEmails - items.length;
-        const neededForCurrentPage = neededItems - availableCount;
-        estimatedPageSize = Math.min(Math.max(neededForCurrentPage, 1), remainingEmails, itemsPerPage);
+        const remainingEmails = Math.max(0, totalEmails - items.length);
+        const neededForCurrentPage = Math.max(0, endIndex - items.length);
+        if (remainingEmails <= 0 || neededForCurrentPage <= 0) { setLoadingMore(false); return; }
+        estimatedPageSize = Math.min(itemsPerPage, remainingEmails, neededForCurrentPage);
       } else {
         estimatedPageSize = itemsPerPage;
       }

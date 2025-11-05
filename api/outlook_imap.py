@@ -98,7 +98,8 @@ def imap_xoauth_list(email_addr: str, access_token: str, from_filter: Optional[s
                         status_h, fetched_h = imap.uid("fetch", str(uid), "(RFC822.HEADER)")
                         if status_h == "OK" and fetched_h and isinstance(fetched_h[0], tuple):
                             messages.append((uid, fetched_h[0][1]))
-        next_token = take[-1] if take else None
+        # Only provide next_token when there are more items beyond the current page
+        next_token = take[-1] if take and len(uids) > len(take) else None
         return messages, next_token
     finally:
         try:
@@ -236,7 +237,8 @@ def imap_xoauth_list_and_bodies(
                         uid_val = int(m.group(1))
                         bodies_map[uid_val] = part[1]
             
-            next_token = take[-1] if take else None
+            # Only provide next_token when there are more items beyond the current page
+            next_token = take[-1] if take and len(uids) > len(take) else None
             return messages, next_token, bodies_map, total_count
         
         return [], None, {}, total_count

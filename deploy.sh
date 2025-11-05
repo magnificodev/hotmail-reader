@@ -104,23 +104,35 @@ EOF
     echo -e "${YELLOW}Minimum required: UI_ORIGIN and NODE_ENV=production${NC}"
 fi
 
-# Setup Frontend
-echo -e "${YELLOW}⚛️  Setting up Next.js frontend...${NC}"
+# Setup Frontend (Static export served by Nginx)
+echo -e "${YELLOW}⚛️  Setting up Next.js frontend (static export)...${NC}"
 cd ${APP_DIR}
 
-# Install dependencies
+# Install dependencies (include dev deps for tailwind/postcss)
 echo -e "${YELLOW}📦 Installing frontend dependencies...${NC}"
-npm install --production=false
+npm install
 
-# Configure frontend API base URL to use Nginx proxy
+# Configure frontend .env and ensure static export is enabled
 echo -e "${YELLOW}🛠  Configuring frontend environment...${NC}"
 echo "NEXT_PUBLIC_API_URL=/api" > .env.local
 
-# Build frontend
+# Ensure next.config.mjs enables static export (idempotent)
+if grep -q "output: 'export'" next.config.mjs; then
+  echo -e "${GREEN}Static export already enabled in next.config.mjs${NC}"
+else
+  # Try to uncomment the suggested lines if present; otherwise append settings
+  sed -i "s|// output: 'export'|output: 'export'|; s|// images: {|images: {|; s|//   unoptimized: true|  unoptimized: true|; s|// },|},|" next.config.mjs || true
+  if ! grep -q "output: 'export'" next.config.mjs; then
+    # Append minimal config
+    sed -i "s|export default nextConfig;|nextConfig.output='export';\nif(!nextConfig.images) nextConfig.images={};\nnextConfig.images.unoptimized=true;\n\nexport default nextConfig;|" next.config.mjs
+  fi
+fi
+
+# Build frontend (generates /out)
 echo -e "${YELLOW}🔨 Building frontend...${NC}"
 npm run build
 
-echo -e "${GREEN}✓ Frontend built successfully${NC}"
+echo -e "${GREEN}✓ Frontend built successfully (static)${NC}"
 
 # Create systemd service for backend
 echo -e "${YELLOW}⚙️  Creating systemd service...${NC}"
@@ -164,54 +176,25 @@ if [ -z "$DOMAIN" ]; then
 fi
 
 # Create systemd service for frontend (Next.js)
-echo -e "${YELLOW}⚙️  Creating systemd service for frontend...${NC}"
-cat > /etc/systemd/system/${APP_NAME}-web.service << EOF
-[Unit]
-Description=Hotmail Reader Frontend (Next.js)
-After=network.target
-
-[Service]
-Type=simple
-User=${SERVICE_USER}
-WorkingDirectory=${APP_DIR}
-Environment="PORT=${FRONTEND_PORT}"
-ExecStart=/usr/bin/npm start
-Restart=always
-RestartSec=10
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-systemctl daemon-reload
-systemctl enable ${APP_NAME}-web.service
-systemctl restart ${APP_NAME}-web.service
-
-# Create Nginx config: root domain -> frontend (port 3000), /api -> backend (8000)
+# Create Nginx config: root domain -> static out/, /api -> backend (8000 with prefix strip)
 cat > /etc/nginx/sites-available/${APP_NAME} << EOF
 server {
     listen 80;
     server_name ${DOMAIN} www.${DOMAIN};
 
-    location /api {
-        proxy_pass http://127.0.0.1:${BACKEND_PORT};
-        proxy_http_version 1.1;
+    location /api/ {
+        proxy_pass http://127.0.0.1:${BACKEND_PORT}/;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
 
+    root ${APP_DIR}/out;
+    index index.html;
+
     location / {
-        proxy_pass http://127.0.0.1:${FRONTEND_PORT};
-        proxy_http_version 1.1;
-        proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection 'upgrade';
-        proxy_set_header Host \$host;
-        proxy_set_header X-Real-IP \$remote_addr;
-        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
-        proxy_set_header X-Forwarded-Proto \$scheme;
-        proxy_cache_bypass \$http_upgrade;
+        try_files \$uri \$uri/ /index.html;
     }
 }
 EOF
