@@ -63,11 +63,11 @@ def select_provider(creds: Credentials) -> str:
     Determine which provider to use based on credentials.
     Returns: "outlook_graph", "outlook_imap", or "invalid"
     
-    Note: We now prefer Graph API over IMAP since most tokens have Mail.Read 
-    scope but not IMAP.AccessAsUser.All scope.
+    Note: We start with Graph API preference, but the actual provider will be
+    auto-detected based on the token scope during token exchange.
     """
-    # If has OAuth credentials (refresh_token + client_id), prefer Graph API
-    # Graph API works with Mail.Read scope which is more common
+    # If has OAuth credentials (refresh_token + client_id), prefer Graph API initially
+    # The actual provider (Graph or IMAP) will be detected based on token exchange result
     if creds.refresh_token and creds.client_id:
         return "outlook_graph"
     

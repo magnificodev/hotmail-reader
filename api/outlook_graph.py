@@ -30,17 +30,22 @@ async def exchange_refresh_token_graph(client_id: str, refresh_token: str):
         "grant_type": "refresh_token",
         "client_id": client_id,
         "refresh_token": refresh_token,
+        "scope": "https://graph.microsoft.com/Mail.Read",
     }
     if client_secret:
         data["client_secret"] = client_secret
 
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(token_url, data=data)
+        print(f"Token exchange status: {resp.status_code}")
+        if resp.status_code >= 400:
+            print(f"Token exchange error: {resp.text}")
         resp.raise_for_status()
         js = resp.json()
         access_token = js.get("access_token")
         if not access_token:
             raise RuntimeError("No access_token for Graph API")
+        print(f"Token exchange successful, access_token length: {len(access_token)}")
         expires_in = js.get("expires_in") or 3600
         new_refresh = js.get("refresh_token")
         return access_token, int(expires_in), new_refresh
@@ -70,12 +75,17 @@ async def graph_list_messages(
     # Build query parameters
     params = {
         "$top": min(limit, 50),  # Graph API max is 999, but we limit to 50
-        "$orderby": "receivedDateTime desc",
-        "$select": "id,subject,from,toRecipients,receivedDateTime,hasAttachments,isRead,internetMessageId,body",
+        "$select": "id,subject,from,toRecipients,receivedDateTime,hasAttachments,isRead,internetMessageId",
     }
+    
+    # Only add $orderby if no filter (Microsoft Graph limitation for MSA accounts)
+    if not from_filter:
+        params["$orderby"] = "receivedDateTime desc"
     
     if from_filter:
         # Filter by sender email
+        # Note: For MSA accounts, filter + orderby together causes "InefficientFilter" error
+        # So we filter only, and sort client-side if needed
         params["$filter"] = f"from/emailAddress/address eq '{from_filter}'"
     
     if skip_token:
@@ -83,6 +93,10 @@ async def graph_list_messages(
     
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.get(url, headers=headers, params=params)
+        print(f"Graph API request URL: {resp.url}")
+        print(f"Graph API status: {resp.status_code}")
+        if resp.status_code >= 400:
+            print(f"Graph API error response: {resp.text}")
         resp.raise_for_status()
         
         result = resp.json()
@@ -201,6 +215,18 @@ async def graph_list_and_convert(
     converted = []
     for msg in messages:
         converted.append(_parse_graph_message_to_email_message(msg))
+    
+    # Sort by date descending (client-side) if we have filter
+    # (Graph API doesn't support $orderby + $filter for MSA accounts)
+    if from_filter and converted:
+        try:
+            from email.utils import parsedate_to_datetime
+            converted.sort(
+                key=lambda x: parsedate_to_datetime(x.get("date", "")) if x.get("date") else datetime.min.replace(tzinfo=timezone.utc),
+                reverse=True
+            )
+        except:
+            pass  # If sorting fails, keep original order
     
     # If include_bodies, we already have body preview
     # For full MIME content, would need separate call to /$value endpoint

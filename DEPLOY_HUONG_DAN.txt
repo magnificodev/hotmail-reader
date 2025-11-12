@@ -1,83 +1,20 @@
-HƯỚNG DẪN TRIỂN KHAI (DEPLOY) HOTMAIL-READER CHO KHÁCH HÀNG
+HƯỚNG DẪN TRIỂN KHAI (DEPLOY) HOTMAIL-READER
 
 1) Yêu cầu tối thiểu
 - Máy chủ (VPS) chạy Ubuntu/Debian, có quyền sudo
 - Cổng 80 (HTTP) mở. Nếu dùng HTTPS cần cổng 443 mở
 
-2) Cách triển khai nhanh (khuyến nghị)
-- Cách A: Dùng 1 file duy nhất deploy.sh
-  a. Tải file và chạy:
-     cd /opt
-     sudo apt-get update -qq && sudo apt-get install -y -qq curl
-     sudo curl -fsSL -o deploy.sh https://raw.githubusercontent.com/magnificodev/hotmail-reader/main/deploy.sh
-     sudo bash deploy.sh
-
-- Cách B: Dùng Git clone toàn bộ mã nguồn
-  a. Chạy:
-     cd /opt
-     sudo git clone https://github.com/magnificodev/hotmail-reader.git || true
-     cd hotmail-reader
-     sudo bash deploy.sh
+2) Cách triển khai
+- cd /opt
+- sudo apt-get update -qq && sudo apt-get install -y -qq curl
+- sudo curl -fsSL -o deploy.sh https://raw.githubusercontent.com/magnificodev/hotmail-reader/main/deploy.sh
+- sudo bash deploy.sh
 
 3) Các câu hỏi khi chạy deploy.sh
-- Domain (nhập domain nếu có, ví dụ: your-domain.com). Nếu không có, bấm Enter để dùng IP máy chủ
+- Domain (nhập domain nếu có, ví dụ: your-domain.com). Nếu không có thì nhập IP Public của máy chủ
 - Bật HTTPS với Let's Encrypt? (y/N)
   • Nếu chọn y: nhập email (tuỳ chọn) để đăng ký chứng chỉ SSL
   • Nếu chọn N: ứng dụng chạy HTTP bình thường
 
-4) Tuỳ chọn khi chạy (không bắt buộc)
-- Máy ít RAM (tránh lỗi thiếu bộ nhớ khi build giao diện):
-  SWAP_ENABLE=1 sudo -E bash deploy.sh
-- Bật HTTPS tự động (không hỏi):
-  AUTO_SSL=1 CERTBOT_EMAIL=you@example.com sudo -E bash deploy.sh
-- Dùng repo/nhánh khác (hiếm khi cần):
-  REPO_URL=https://github.com/<ban>/<repo>.git GIT_BRANCH=main sudo -E bash deploy.sh
-
-5) Sau khi triển khai xong
-- Mở trình duyệt truy cập: http://<domain-hoặc-IP>
-- Kiểm tra API: http://<domain-hoặc-IP>:8000/health
-- Xem log backend (thời gian thực):
-  sudo journalctl -u hotmail-reader-api -f
-- Kiểm tra cấu hình Nginx:
-  sudo nginx -t && sudo systemctl restart nginx
-
-6) Cấu hình môi trường backend (api/.env)
-- File tự động tạo tại: /opt/hotmail-reader/api/.env
-- Nội dung tối thiểu:
-  UI_ORIGIN=http://<domain-hoặc-IP>
-  NODE_ENV=production
-- Không cần điền CLIENT_ID/SECRET nếu bạn đã có chuỗi credString (refresh_token + client_id) từ người dùng
-
-7) Cập nhật/triển khai lại (khi có phiên bản mới)
-  cd /opt/hotmail-reader
-  sudo bash deploy.sh
-  (Có thể thêm SWAP_ENABLE=1 nếu máy yếu RAM)
-
-8) Xử lý sự cố thường gặp
-- Trang hiển thị "Build pending":
-  • Do máy yếu RAM hoặc build giao diện chưa hoàn tất. Hãy chạy lại với SWAP_ENABLE=1 hoặc đợi vài phút rồi chạy lại lệnh deploy
-  • Đảm bảo file next.config.mjs đã bật output: 'export'
-- API không chạy:
-  • Kiểm tra dịch vụ: sudo systemctl status hotmail-reader-api
-  • Xem log: sudo journalctl -u hotmail-reader-api -f
-- Lỗi Nginx:
-  • Kiểm tra cấu hình: sudo nginx -t
-  • Khởi động lại: sudo systemctl restart nginx
-- HTTPS không hoạt động:
-  • Chạy lại với AUTO_SSL=1 CERTBOT_EMAIL=you@example.com
-  • Kiểm tra domain trỏ đúng IP máy chủ và cổng 80/443 mở
-
-9) Gỡ bỏ (tuỳ chọn)
-- Tắt dịch vụ backend:
-  sudo systemctl disable --now hotmail-reader-api
-- Xoá Nginx site:
-  sudo rm -f /etc/nginx/sites-enabled/hotmail-reader /etc/nginx/sites-available/hotmail-reader
-  sudo systemctl reload nginx
-- Xoá mã nguồn (nếu cần):
-  sudo rm -rf /opt/hotmail-reader
-
-10) Hỗ trợ
-- Repo dự án: https://github.com/magnificodev/hotmail-reader
-- Nếu cần hỗ trợ, vui lòng cung cấp log lỗi (journalctl/nginx -t) và địa chỉ IP/domain
-
-
+4) Kiểm tra
+Mở trình duyệt truy cập: http://<domain-hoặc-IP>
