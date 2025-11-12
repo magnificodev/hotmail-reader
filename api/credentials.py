@@ -59,8 +59,19 @@ def parse_cred_string(cred_string: str) -> Credentials:
 
 
 def select_provider(creds: Credentials) -> str:
-    # Ưu tiên Outlook IMAP XOAUTH2 theo yêu cầu hiện tại
+    """
+    Determine which provider to use based on credentials.
+    Returns: "outlook_graph", "outlook_imap", or "invalid"
+    
+    Note: We now prefer Graph API over IMAP since most tokens have Mail.Read 
+    scope but not IMAP.AccessAsUser.All scope.
+    """
+    # If has OAuth credentials (refresh_token + client_id), prefer Graph API
+    # Graph API works with Mail.Read scope which is more common
     if creds.refresh_token and creds.client_id:
-        return "outlook_imap"
+        return "outlook_graph"
+    
+    # If only password, would need IMAP (not implemented here for password-only)
+    # For now, OAuth is required
     return "invalid"
 

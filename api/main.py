@@ -222,9 +222,18 @@ async def get_outlook_access_token(email: str, client_id: str, refresh_token: st
     entry = _TOKEN_CACHE.get(key)
     if entry and entry.get("expires_at", 0) - TOKEN_EXPIRY_BUFFER_SECONDS > now:
         return entry["access_token"]
-    access_token, expires_in, new_refresh = await exchange_refresh_token_outlook(client_id, refresh_token)
-    _TOKEN_CACHE[key] = {"access_token": access_token, "expires_at": now + int(expires_in)}
-    return access_token
+    
+    # Try Graph API token exchange first (works with Mail.Read scope)
+    try:
+        from .outlook_graph import exchange_refresh_token_graph
+        access_token, expires_in, new_refresh = await exchange_refresh_token_graph(client_id, refresh_token)
+        _TOKEN_CACHE[key] = {"access_token": access_token, "expires_at": now + int(expires_in)}
+        return access_token
+    except Exception:
+        # Fallback to IMAP token exchange if Graph fails
+        access_token, expires_in, new_refresh = await exchange_refresh_token_outlook(client_id, refresh_token)
+        _TOKEN_CACHE[key] = {"access_token": access_token, "expires_at": now + int(expires_in)}
+        return access_token
 
 
 def _parse_addresses(h: str | None) -> List[str]:
@@ -309,7 +318,44 @@ async def messages(req: MessagesRequest) -> PageResult:
     from_filter = req.from_
     size = max(MIN_PAGE_SIZE, min(req.page_size or DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE))
 
-    if provider == "outlook_imap":
+    if provider == "outlook_graph":
+        # Use Microsoft Graph API
+        try:
+            from .outlook_graph import exchange_refresh_token_graph, graph_list_and_convert
+            
+            token = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "")
+            
+            # Get messages via Graph API
+            messages_data, next_token, total_count = await graph_list_and_convert(
+                token,
+                from_filter=from_filter,
+                limit=size,
+                skip_token=req.page_token,
+                include_bodies=req.include_body or False
+            )
+            
+            # Convert to EmailMessage format
+            items: List[EmailMessage] = []
+            for msg_data in messages_data:
+                items.append({
+                    "id": msg_data["id"],
+                    "from_": msg_data["from"],
+                    "to": [msg_data["to"]] if msg_data["to"] else [],
+                    "subject": msg_data["subject"],
+                    "content": msg_data.get("body_text") or msg_data.get("body_preview") or "",
+                    "date": msg_data["date"],
+                })
+            
+            return {
+                "items": items,
+                "next_page_token": next_token,
+                "total": total_count if total_count >= 0 else None
+            }
+        except Exception as e:
+            detail = _sanitize_error_message(e, not is_development())
+            raise HTTPException(status_code=400, detail=detail)
+    
+    elif provider == "outlook_imap":
         try:
             token = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "")
             # Use optimized function that reuses IMAP connection
@@ -358,7 +404,62 @@ async def otp(req: OtpRequest) -> Dict[str, Any]:
     from_filter = req.from_
     time_window = req.time_window_minutes or DEFAULT_TIME_WINDOW_MINUTES
 
-    if provider == "outlook_imap":
+    if provider == "outlook_graph":
+        # Use Microsoft Graph API
+        try:
+            from .outlook_graph import graph_list_and_convert
+            
+            token = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "")
+            
+            # Get recent messages
+            messages_data, _, _ = await graph_list_and_convert(
+                token,
+                from_filter=from_filter,
+                limit=DEFAULT_OTP_TOP_EMAILS,
+                skip_token=None,
+                include_bodies=True
+            )
+            
+            if not messages_data:
+                return {"otp": None}
+            
+            # Extract OTP from messages
+            for msg_data in messages_data:
+                # Get date
+                date_str = msg_data.get("date", "")
+                try:
+                    # Parse email date format
+                    import email.utils
+                    dt_tuple = email.utils.parsedate_to_datetime(date_str)
+                    if not within_window(dt_tuple, time_window):
+                        continue
+                except:
+                    continue
+                
+                # Get text content
+                text = msg_data.get("body_text") or msg_data.get("body_preview") or ""
+                html = msg_data.get("body_html") or ""
+                
+                # Convert HTML to text if needed
+                if not text and html:
+                    text = html_to_text(html)
+                
+                # Extract OTP
+                found = extract_otp_from_text(text, req.regex)
+                if found:
+                    return {
+                        "otp": found,
+                        "from": msg_data["from"],
+                        "subject": msg_data["subject"],
+                        "date": date_str,
+                    }
+            
+            return {"otp": None}
+        except Exception as e:
+            detail = _sanitize_error_message(e, not is_development())
+            raise HTTPException(status_code=400, detail=detail)
+    
+    elif provider == "outlook_imap":
         try:
             token = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "")
             # Optimize: Use batch fetch instead of individual calls
@@ -394,22 +495,47 @@ async def otp(req: OtpRequest) -> Dict[str, Any]:
 async def message_body(req: MessageBodyRequest) -> Dict[str, Any]:
     creds = parse_cred_string(req.credString)
     provider = select_provider(creds)
-    if provider != "outlook_imap":
-        raise HTTPException(status_code=400, detail=ERROR_INVALID_CREDENTIALS)
-    try:
-        token = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "")
-        body_bytes = imap_xoauth_get_body(creds.email, token, int(req.id))
-        msg = pyemail.message_from_bytes(body_bytes)
-        subject = str(make_header(decode_header(msg.get("Subject", ""))))
-        date = msg.get("Date", "")
-        from_raw = str(make_header(decode_header(msg.get("From", ""))))
-        to_raw = msg.get("To", "") or ""
-        # Extract text and html using shared function
-        text, html = _extract_email_text_and_html(msg)
-        return {"id": req.id, "subject": subject, "date": date, "from": from_raw, "to": to_raw, "text": text, "html": html}
-    except Exception as e:
-        detail = _sanitize_error_message(e, not is_development())
-        raise HTTPException(status_code=400, detail=detail)
+    
+    if provider == "outlook_graph":
+        # Use Microsoft Graph API
+        try:
+            from .outlook_graph import graph_get_message_details
+            
+            token = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "")
+            
+            # Get message details
+            msg_data = await graph_get_message_details(token, req.id)
+            
+            return {
+                "id": req.id,
+                "subject": msg_data["subject"],
+                "date": msg_data["date"],
+                "from": msg_data["from"],
+                "to": msg_data["to"],
+                "text": msg_data.get("body_text") or "",
+                "html": msg_data.get("body_html") or "",
+            }
+        except Exception as e:
+            detail = _sanitize_error_message(e, not is_development())
+            raise HTTPException(status_code=400, detail=detail)
+    
+    elif provider == "outlook_imap":
+        try:
+            token = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "")
+            body_bytes = imap_xoauth_get_body(creds.email, token, int(req.id))
+            msg = pyemail.message_from_bytes(body_bytes)
+            subject = str(make_header(decode_header(msg.get("Subject", ""))))
+            date = msg.get("Date", "")
+            from_raw = str(make_header(decode_header(msg.get("From", ""))))
+            to_raw = msg.get("To", "") or ""
+            # Extract text and html using shared function
+            text, html = _extract_email_text_and_html(msg)
+            return {"id": req.id, "subject": subject, "date": date, "from": from_raw, "to": to_raw, "text": text, "html": html}
+        except Exception as e:
+            detail = _sanitize_error_message(e, not is_development())
+            raise HTTPException(status_code=400, detail=detail)
+    
+    raise HTTPException(status_code=400, detail=ERROR_INVALID_CREDENTIALS)
 
 
 if __name__ == "__main__":
