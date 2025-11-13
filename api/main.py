@@ -16,15 +16,15 @@ from fastapi.responses import RedirectResponse, JSONResponse
 import email as pyemail
 from email.header import decode_header, make_header
 
-from .credentials import parse_cred_string, select_provider
-from .outlook_imap import exchange_refresh_token_outlook, imap_xoauth_list, imap_xoauth_get_body, imap_xoauth_fetch_bodies, imap_xoauth_list_and_bodies
-from .otp_utils import html_to_text, extract_otp_from_text, within_window
-from .models import EmailMessage, PageResult
-from .config import (
+from credentials import parse_cred_string, select_provider
+from outlook_imap import exchange_refresh_token_outlook, imap_xoauth_list, imap_xoauth_get_body, imap_xoauth_fetch_bodies, imap_xoauth_list_and_bodies
+from otp_utils import html_to_text, extract_otp_from_text, within_window
+from models import EmailMessage, PageResult
+from config import (
     get_ui_origins, get_client_id, get_client_secret, get_tenant,
     get_outlook_scope, get_oauth_redirect_uri, is_development, get_test_cred_string
 )
-from .constants import (
+from constants import (
     DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE,
     DEFAULT_OTP_TOP_EMAILS, DEFAULT_TIME_WINDOW_MINUTES,
     STATE_TTL_SECONDS, TOKEN_EXPIRY_BUFFER_SECONDS,
@@ -229,7 +229,7 @@ async def get_outlook_access_token(email: str, client_id: str, refresh_token: st
     
     # Try Graph API token exchange first (more common and reliable)
     try:
-        from .outlook_graph import exchange_refresh_token_graph
+        from outlook_graph import exchange_refresh_token_graph
         access_token, expires_in, new_refresh = await exchange_refresh_token_graph(client_id, refresh_token)
         _TOKEN_CACHE[key] = {
             "access_token": access_token, 
@@ -261,7 +261,7 @@ async def get_outlook_access_token(email: str, client_id: str, refresh_token: st
             if is_token_expired and password:
                 print(f"Refresh token expired, attempting password-based refresh for {email}...")
                 try:
-                    from .oauth_refresh import refresh_token_with_password
+                    from oauth_refresh import refresh_token_with_password
                     token_data = await refresh_token_with_password(email, password, client_id)
                     new_refresh_token = token_data.get("refresh_token")
                     
@@ -272,7 +272,7 @@ async def get_outlook_access_token(email: str, client_id: str, refresh_token: st
                     
                     # Retry with new refresh token
                     try:
-                        from .outlook_graph import exchange_refresh_token_graph
+                        from outlook_graph import exchange_refresh_token_graph
                         access_token, expires_in, _ = await exchange_refresh_token_graph(client_id, new_refresh_token)
                         _TOKEN_CACHE[key] = {
                             "access_token": access_token,
@@ -393,7 +393,7 @@ async def messages(req: MessagesRequest) -> PageResult:
     if provider == "outlook_graph":
         # Use Microsoft Graph API
         try:
-            from .outlook_graph import exchange_refresh_token_graph, graph_list_and_convert
+            from outlook_graph import exchange_refresh_token_graph, graph_list_and_convert
             
             token, detected_provider = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "", creds.password)
             
@@ -484,7 +484,7 @@ async def otp(req: OtpRequest) -> Dict[str, Any]:
     if provider == "outlook_graph":
         # Use Microsoft Graph API
         try:
-            from .outlook_graph import graph_list_and_convert
+            from outlook_graph import graph_list_and_convert
             
             token, detected_provider = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "", creds.password)
             
@@ -581,7 +581,7 @@ async def message_body(req: MessageBodyRequest) -> Dict[str, Any]:
     if provider == "outlook_graph":
         # Use Microsoft Graph API
         try:
-            from .outlook_graph import graph_get_message_details
+            from outlook_graph import graph_get_message_details
             
             token, detected_provider = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "", creds.password)
             

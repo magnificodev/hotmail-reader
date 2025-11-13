@@ -7,8 +7,8 @@ from typing import List, Optional, Tuple, Dict
 
 import httpx
 
-from .config import get_outlook_scope
-from .constants import OUTLOOK_IMAP_HOST, OUTLOOK_IMAP_PORT
+from config import get_outlook_scope
+from constants import OUTLOOK_IMAP_HOST, OUTLOOK_IMAP_PORT
 
 HOST = os.getenv("OUTLOOK_IMAP_HOST", OUTLOOK_IMAP_HOST)
 PORT = int(os.getenv("OUTLOOK_IMAP_PORT", str(OUTLOOK_IMAP_PORT)))
@@ -18,7 +18,7 @@ _UID_PATTERN = re.compile(r"UID\s+(\d+)")
 
 
 async def exchange_refresh_token_outlook(client_id: str, refresh_token: str):
-    from .config import get_tenant, get_client_secret
+    from config import get_tenant, get_client_secret
     
     tenant = get_tenant()
     token_url = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"

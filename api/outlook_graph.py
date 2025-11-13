@@ -20,7 +20,7 @@ async def exchange_refresh_token_graph(client_id: str, refresh_token: str):
     Exchange refresh token for access token using Microsoft identity platform.
     Works with Mail.Read scope (Graph API).
     """
-    from .config import get_tenant, get_client_secret
+    from config import get_tenant, get_client_secret
     
     tenant = get_tenant()
     token_url = f"https://login.microsoftonline.com/{tenant}/oauth2/v2.0/token"
@@ -137,7 +137,7 @@ def _parse_graph_message_to_email_message(msg: Dict) -> Dict:
     """
     Convert Graph API message format to our EmailMessage format.
     """
-    from .models import EmailMessage
+    from models import EmailMessage
     
     # Extract sender
     from_obj = msg.get("from", {}).get("emailAddress", {})
