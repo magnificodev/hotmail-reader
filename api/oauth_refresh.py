@@ -61,6 +61,55 @@ class GetOAuth2Token:
             Dict with access_token, refresh_token, expires_in, etc.
             None if authentication fails.
         """
+        print(f"\n{'='*70}")
+        print("PASSWORD-BASED TOKEN REFRESH LIMITATION")
+        print(f"{'='*70}")
+        print("Microsoft personal accounts (hotmail.com, outlook.com) do NOT support")
+        print("automated password-based authentication (ROPC flow).")
+        print("")
+        print("Available options:")
+        print("1. Use a tool that supports browser-based OAuth")
+        print("2. Manually obtain new refresh_token via browser")
+        print("")
+        print("Manual refresh_token steps:")
+        print(f"  1. Visit: https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize")
+        print(f"     ?client_id={self.client_id}")
+        print(f"     &response_type=code")
+        print(f"     &redirect_uri=https://localhost")
+        print(f"     &scope=offline_access%20https://graph.microsoft.com/Mail.Read")
+        print(f"  2. Login with: {email}")
+        print(f"  3. Copy authorization code from redirect URL")
+        print(f"  4. Exchange code:")
+        print(f"     POST https://login.microsoftonline.com/consumers/oauth2/v2.0/token")
+        print(f"     Data: grant_type=authorization_code&client_id={self.client_id}")
+        print(f"           &code=YOUR_CODE&redirect_uri=https://localhost")
+        print(f"{'='*70}\n")
+        return None
+    
+    async def _try_ropc_flow(self, email: str, password: str) -> Optional[Dict[str, Any]]:
+        """Try Azure AD Resource Owner Password Credentials flow"""
+        token_data = {
+            'client_id': self.client_id,
+            'scope': 'offline_access https://graph.microsoft.com/Mail.Read https://graph.microsoft.com/Mail.ReadWrite',
+            'username': email,
+            'password': password,
+            'grant_type': 'password'
+        }
+        
+        async with httpx.AsyncClient(timeout=30) as client:
+            token_resp = await client.post(self.token_url, data=token_data)
+            
+            if token_resp.status_code == 200:
+                print("✅ ROPC flow successful!")
+                return token_resp.json()
+            else:
+                print(f"ROPC flow failed: {token_resp.status_code} - {token_resp.text[:200]}")
+                return None
+    
+    async def _try_classic_flow(self, email: str, password: str) -> Optional[Dict[str, Any]]:
+        """
+        Classic Microsoft Account OAuth flow via login.live.com
+        """
         auth_url = f"{self.base_url}/oauth20_authorize.srf"
         params = {
             'response_type': 'code',
