@@ -80,18 +80,38 @@ class GetOAuth2Token:
                 resp = await client.get(auth_url, headers=headers)
                 
                 # Extract post URL and PPFT token
-                post_url_match = re.search(r'https://login.live.com/ppsecure/post.srf\?(.*?)[\'"]', resp.text)
+                post_url_match = re.search(r'urlPost:\s*[\'"]([^\'"]+)', resp.text)
                 if not post_url_match:
-                    print("Failed to extract post URL")
+                    post_url_match = re.search(r'https://login\.live\.com/ppsecure/post\.srf\?([^\'"]+)', resp.text)
+                
+                if not post_url_match:
+                    print(f"Failed to extract post URL. Page sample: {resp.text[:500]}")
                     return None
                     
-                post_url = f"{self.base_url}/ppsecure/post.srf{post_url_match.group(1)}"
+                post_url = post_url_match.group(1) if 'urlPost' in post_url_match.group(0) else f"{self.base_url}/ppsecure/post.srf?{post_url_match.group(1)}"
                 
-                ppft_match = re.search(r'<input type="hidden" name="PPFT" id="(.*?)" value="(.*?)"', resp.text)
+                # Try multiple PPFT patterns
+                ppft_match = re.search(r'sFTTag:\s*[\'"]<input[^>]*value=\\"([^\\"]+)\\"', resp.text)
                 if not ppft_match:
-                    print("Failed to extract PPFT token")
+                    ppft_match = re.search(r'<input[^>]*name=["\']PPFT["\'][^>]*value=["\']([^"\']+)', resp.text, re.IGNORECASE)
+                if not ppft_match:
+                    ppft_match = re.search(r'name="PPFT"[^>]*value="([^"]+)"', resp.text)
+                    
+                if not ppft_match:
+                    print(f"Failed to extract PPFT token. Page sample: {resp.text[:500]}")
+                    print("\n" + "="*70)
+                    print("NOTE: Microsoft has changed their login page structure.")
+                    print("Password-based refresh is no longer supported for this account type.")
+                    print("Please obtain a new refresh_token manually:")
+                    print("1. Visit: https://login.microsoftonline.com/consumers/oauth2/v2.0/authorize")
+                    print(f"2. Use parameters: client_id={self.client_id}")
+                    print("   scope=offline_access%20Mail.Read%20Mail.ReadWrite")
+                    print("   response_type=code")
+                    print("3. Copy the authorization code from redirect URL")
+                    print("4. Exchange code for tokens at token endpoint")
+                    print("="*70 + "\n")
                     return None
-                ppft = ppft_match.group(2)
+                ppft = ppft_match.group(1)
                 
                 # Login
                 login_data = {

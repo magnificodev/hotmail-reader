@@ -34,7 +34,9 @@ async def exchange_refresh_token_outlook(client_id: str, refresh_token: str):
 
     async with httpx.AsyncClient(timeout=30) as client:
         resp = await client.post(token_url, data=data)
-        resp.raise_for_status()
+        if resp.status_code >= 400:
+            error_body = resp.text
+            raise RuntimeError(f"Token exchange failed: {resp.status_code} - {error_body}")
         js = resp.json()
         access_token = js.get("access_token")
         if not access_token:

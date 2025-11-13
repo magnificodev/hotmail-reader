@@ -254,9 +254,12 @@ async def get_outlook_access_token(email: str, client_id: str, refresh_token: st
             # Check if refresh token expired (specific error codes)
             error_str = str(e1).lower() + str(e2).lower()
             is_token_expired = any(err in error_str for err in [
-                "invalid_grant", "aadsts70000", "expired", "aadsts50173",
-                "interaction_required", "token has been revoked"
+                "invalid_grant", "aadsts70000", "70000", "expired", "aadsts50173", "50173",
+                "interaction_required", "token has been revoked", "revoked"
             ])
+            
+            print(f"Token expired check: is_expired={is_token_expired}, has_password={password is not None}, password_value={password}")
+            print(f"Error string sample: {error_str[:200]}")
             
             if is_token_expired and password:
                 print(f"Refresh token expired, attempting password-based refresh for {email}...")

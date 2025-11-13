@@ -39,8 +39,10 @@ async def exchange_refresh_token_graph(client_id: str, refresh_token: str):
         resp = await client.post(token_url, data=data)
         print(f"Token exchange status: {resp.status_code}")
         if resp.status_code >= 400:
-            print(f"Token exchange error: {resp.text}")
-        resp.raise_for_status()
+            error_body = resp.text
+            print(f"Token exchange error: {error_body}")
+            # Raise error with body included for better error detection
+            raise RuntimeError(f"Token exchange failed: {resp.status_code} - {error_body}")
         js = resp.json()
         access_token = js.get("access_token")
         if not access_token:
