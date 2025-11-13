@@ -213,7 +213,7 @@ def _cache_key(email: str, client_id: Optional[str], refresh_token: Optional[str
     return f"{email}|{client_id}|{short}"
 
 
-async def get_outlook_access_token(email: str, client_id: str, refresh_token: str) -> Tuple[str, str]:
+async def get_outlook_access_token(email: str, client_id: str, refresh_token: str, password: str | None = None) -> Tuple[str, str]:
     """
     Get access token and detect provider type (graph or imap).
     Returns: (access_token, provider_type)
@@ -251,6 +251,56 @@ async def get_outlook_access_token(email: str, client_id: str, refresh_token: st
             print(f"Token exchange successful via IMAP endpoint, provider: imap")
             return access_token, "imap"
         except Exception as e2:
+            # Check if refresh token expired (specific error codes)
+            error_str = str(e1).lower() + str(e2).lower()
+            is_token_expired = any(err in error_str for err in [
+                "invalid_grant", "aadsts70000", "expired", "aadsts50173",
+                "interaction_required", "token has been revoked"
+            ])
+            
+            if is_token_expired and password:
+                print(f"Refresh token expired, attempting password-based refresh for {email}...")
+                try:
+                    from .oauth_refresh import refresh_token_with_password
+                    token_data = await refresh_token_with_password(email, password, client_id)
+                    new_refresh_token = token_data.get("refresh_token")
+                    
+                    if not new_refresh_token:
+                        raise ValueError("No refresh_token returned from password-based auth")
+                    
+                    print(f"Got new refresh token via password auth, retrying token exchange...")
+                    
+                    # Retry with new refresh token
+                    try:
+                        from .outlook_graph import exchange_refresh_token_graph
+                        access_token, expires_in, _ = await exchange_refresh_token_graph(client_id, new_refresh_token)
+                        _TOKEN_CACHE[key] = {
+                            "access_token": access_token,
+                            "expires_at": now + int(expires_in),
+                            "provider": "graph",
+                            "new_refresh_token": new_refresh_token  # Store for credential update
+                        }
+                        print(f"Token refresh successful via password fallback, provider: graph")
+                        return access_token, "graph"
+                    except Exception as e3:
+                        # Try IMAP fallback with new refresh token
+                        access_token, expires_in, _ = await exchange_refresh_token_outlook(client_id, new_refresh_token)
+                        _TOKEN_CACHE[key] = {
+                            "access_token": access_token,
+                            "expires_at": now + int(expires_in),
+                            "provider": "imap",
+                            "new_refresh_token": new_refresh_token  # Store for credential update
+                        }
+                        print(f"Token refresh successful via password fallback, provider: imap")
+                        return access_token, "imap"
+                        
+                except Exception as e_pwd:
+                    print(f"Password-based token refresh failed: {e_pwd}")
+                    raise HTTPException(
+                        status_code=400,
+                        detail=f"Token expired and password refresh failed: {e_pwd}"
+                    )
+            
             print(f"Both token exchange methods failed. Graph: {e1}, IMAP: {e2}")
             raise HTTPException(
                 status_code=400, 
@@ -345,7 +395,7 @@ async def messages(req: MessagesRequest) -> PageResult:
         try:
             from .outlook_graph import exchange_refresh_token_graph, graph_list_and_convert
             
-            token, detected_provider = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "")
+            token, detected_provider = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "", creds.password)
             
             # If detected provider is IMAP, switch to IMAP logic
             if detected_provider == "imap":
@@ -384,7 +434,7 @@ async def messages(req: MessagesRequest) -> PageResult:
     
     if provider == "outlook_imap":
         try:
-            token, _ = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "")
+            token, _ = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "", creds.password)
             # Use optimized function that reuses IMAP connection
             page_token_int = None
             if req.page_token:
@@ -436,7 +486,7 @@ async def otp(req: OtpRequest) -> Dict[str, Any]:
         try:
             from .outlook_graph import graph_list_and_convert
             
-            token, detected_provider = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "")
+            token, detected_provider = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "", creds.password)
             
             # If detected provider is IMAP, switch to IMAP logic
             if detected_provider == "imap":
@@ -493,7 +543,7 @@ async def otp(req: OtpRequest) -> Dict[str, Any]:
     
     if provider == "outlook_imap":
         try:
-            token, _ = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "")
+            token, _ = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "", creds.password)
             # Optimize: Use batch fetch instead of individual calls
             raw, _ = imap_xoauth_list(creds.email, token, from_filter, DEFAULT_OTP_TOP_EMAILS, None)
             if not raw:
@@ -533,7 +583,7 @@ async def message_body(req: MessageBodyRequest) -> Dict[str, Any]:
         try:
             from .outlook_graph import graph_get_message_details
             
-            token, detected_provider = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "")
+            token, detected_provider = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "", creds.password)
             
             # If detected provider is IMAP, switch to IMAP logic
             if detected_provider == "imap":
@@ -558,7 +608,7 @@ async def message_body(req: MessageBodyRequest) -> Dict[str, Any]:
     
     if provider == "outlook_imap":
         try:
-            token, _ = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "")
+            token, _ = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "", creds.password)
             body_bytes = imap_xoauth_get_body(creds.email, token, int(req.id))
             msg = pyemail.message_from_bytes(body_bytes)
             subject = str(make_header(decode_header(msg.get("Subject", ""))))
