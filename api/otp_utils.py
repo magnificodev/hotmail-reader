@@ -29,20 +29,24 @@ def html_to_text(html: str) -> str:
     Always return normalized plain text.
     """
     raw = html or ""
+    text = ""
     # Try with html5lib first
     try:
         soup = BeautifulSoup(raw, "html5lib")
         text = soup.get_text("\n", strip=True)
     except Exception:
-        # Fallback to built-in parser
+        text = ""
+    # Nếu vẫn còn tag html hoặc text rỗng, thử parser khác
+    if not text or "<" in text:
         try:
             soup = BeautifulSoup(raw, "html.parser")
             text = soup.get_text("\n", strip=True)
         except Exception:
-            # Last resort: strip tags by regex
-            import re as _re
-            text = _re.sub(r"<[^>]*>", " ", raw)
-
+            text = ""
+    # Nếu vẫn còn tag html hoặc text rỗng, strip toàn bộ tag bằng regex
+    if not text or "<" in text:
+        import re as _re
+        text = _re.sub(r"<[^>]*>", " ", raw)
     # Normalize whitespace
     text = _WHITESPACE_NEWLINE_PATTERN.sub(" ", text)
     text = _MULTIPLE_SPACES_PATTERN.sub(" ", text)

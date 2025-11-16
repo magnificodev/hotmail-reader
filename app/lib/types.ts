@@ -6,7 +6,9 @@ export interface EmailMessage {
   to: string[];
   subject: string;
   content: string;
+  html?: string;
   date: string;
+  otp?: string | null;
 }
 
 export interface PageResult {

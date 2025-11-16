@@ -16,15 +16,15 @@ from fastapi.responses import RedirectResponse, JSONResponse
 import email as pyemail
 from email.header import decode_header, make_header
 
-from credentials import parse_cred_string, select_provider
-from outlook_imap import exchange_refresh_token_outlook, imap_xoauth_list, imap_xoauth_get_body, imap_xoauth_fetch_bodies, imap_xoauth_list_and_bodies
-from otp_utils import html_to_text, extract_otp_from_text, within_window
-from models import EmailMessage, PageResult
-from config import (
+from .credentials import parse_cred_string, select_provider
+from .outlook_imap import exchange_refresh_token_outlook, imap_xoauth_list, imap_xoauth_get_body, imap_xoauth_fetch_bodies, imap_xoauth_list_and_bodies
+from .otp_utils import html_to_text, extract_otp_from_text, within_window
+from .models import EmailMessage, PageResult
+from .config import (
     get_ui_origins, get_client_id, get_client_secret, get_tenant,
     get_outlook_scope, get_oauth_redirect_uri, is_development, get_test_cred_string
 )
-from constants import (
+from .constants import (
     DEFAULT_PAGE_SIZE, MAX_PAGE_SIZE, MIN_PAGE_SIZE,
     DEFAULT_OTP_TOP_EMAILS, DEFAULT_TIME_WINDOW_MINUTES,
     STATE_TTL_SECONDS, TOKEN_EXPIRY_BUFFER_SECONDS,
@@ -229,7 +229,7 @@ async def get_outlook_access_token(email: str, client_id: str, refresh_token: st
     
     # Try Graph API token exchange first (more common and reliable)
     try:
-        from outlook_graph import exchange_refresh_token_graph
+        from .outlook_graph import exchange_refresh_token_graph
         access_token, expires_in, new_refresh = await exchange_refresh_token_graph(client_id, refresh_token)
         _TOKEN_CACHE[key] = {
             "access_token": access_token, 
@@ -275,7 +275,7 @@ async def get_outlook_access_token(email: str, client_id: str, refresh_token: st
                     
                     # Retry with new refresh token
                     try:
-                        from outlook_graph import exchange_refresh_token_graph
+                        from .outlook_graph import exchange_refresh_token_graph
                         access_token, expires_in, _ = await exchange_refresh_token_graph(client_id, new_refresh_token)
                         _TOKEN_CACHE[key] = {
                             "access_token": access_token,
@@ -396,7 +396,7 @@ async def messages(req: MessagesRequest) -> PageResult:
     if provider == "outlook_graph":
         # Use Microsoft Graph API
         try:
-            from outlook_graph import exchange_refresh_token_graph, graph_list_and_convert
+            from .outlook_graph import exchange_refresh_token_graph, graph_list_and_convert
             
             token, detected_provider = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "", creds.password)
             
@@ -414,18 +414,54 @@ async def messages(req: MessagesRequest) -> PageResult:
                     include_bodies=req.include_body or False
                 )
                 
-                # Convert to EmailMessage format
+                # Convert to EmailMessage format, trích xuất OTP nếu có
+                from .outlook_graph import graph_get_message_details
                 items: List[EmailMessage] = []
                 for msg_data in messages_data:
+                    text = msg_data.get("body_text") or msg_data.get("body_preview") or ""
+                    html = msg_data.get("body_html") or ""
+                    # Debug: log body_html trước khi chuyển sang text
+                    print(f"[DEBUG] subject={msg_data['subject']}, body_html={repr(html)[:1000] if html else None}")
+                    otp = None
+                    need_full_body = False
+                    # Nếu html chỉ chứa <head> hoặc không có OTP, cần lấy lại full body
+                    if html.strip().lower().startswith("<html><head>") or (not text and not html):
+                        need_full_body = True
+                    # Luôn ưu tiên chuyển html sang text nếu có html
+                    if html:
+                        text_for_otp = html_to_text(html)
+                    else:
+                        text_for_otp = text
+                    # Trường content luôn là text đã chuyển đổi nếu có
+                    content = text_for_otp or html or text
+                    # Trích xuất OTP từ text đã chuyển đổi
+                    otp = extract_otp_from_text(text_for_otp, None)
+                    # Log đúng giá trị text_for_otp sau khi đã chuyển đổi
+                    print(f"[DEBUG] subject={msg_data['subject']}, text_for_otp={repr(text_for_otp)[:300]}, otp={otp}")
+                    # Nếu vẫn chưa có OTP hoặc html nghi ngờ, lấy lại full body
+                    if (not otp or need_full_body) and req.include_body:
+                        try:
+                            full_msg = await graph_get_message_details(token, msg_data["id"])
+                            text = full_msg.get("body_text") or full_msg.get("body_preview") or text
+                            html = full_msg.get("body_html") or html
+                            # Thử lại trích xuất OTP
+                            if text and not otp:
+                                otp = extract_otp_from_text(text, None)
+                            if not otp and html:
+                                text_from_html = html_to_text(html)
+                                otp = extract_otp_from_text(text_from_html, None)
+                        except Exception:
+                            pass
                     items.append({
                         "id": msg_data["id"],
                         "from_": msg_data["from"],
                         "to": [msg_data["to"]] if msg_data["to"] else [],
                         "subject": msg_data["subject"],
-                        "content": msg_data.get("body_text") or msg_data.get("body_preview") or "",
+                        "content": content,
+                        "html": html,
                         "date": msg_data["date"],
+                        "otp": otp,
                     })
-                
                 return {
                     "items": items,
                     "next_page_token": next_token,
@@ -456,19 +492,29 @@ async def messages(req: MessagesRequest) -> PageResult:
                 to_list = _parse_addresses(msg.get("To"))
                 subject = str(make_header(decode_header(msg.get("Subject", ""))))
                 date = msg.get("Date", "")
-                content = ""
+                text = ""
+                html = ""
+                otp = None
                 if req.include_body and uid in bodies_map:
                     bmsg = pyemail.message_from_bytes(bodies_map[uid])
-                    content = _extract_email_content(bmsg)
-
+                    # Extract both text and html
+                    text, html = _extract_email_text_and_html(bmsg)
+                    # OTP extraction logic: prioritize text, fallback to html->text
+                    if text:
+                        otp = extract_otp_from_text(text, None)
+                    if not otp and html:
+                        text_from_html = html_to_text(html)
+                        otp = extract_otp_from_text(text_from_html, None)
                 items.append({
                     "id": str(uid),
                     "from_": from_raw,
                     "to": to_list,
                     "subject": subject,
-                    "content": content if req.include_body else "",
+                    "content": text if req.include_body else "",
+                    "html": html if req.include_body else "",
                     "date": date,
-                    })
+                    "otp": otp,
+                })
             return {"items": items, "next_page_token": str(next_uid) if next_uid else None, "total": total_count if page_token_int is None else None}
         except Exception as e:
             detail = _sanitize_error_message(e, not is_development())
@@ -487,7 +533,7 @@ async def otp(req: OtpRequest) -> Dict[str, Any]:
     if provider == "outlook_graph":
         # Use Microsoft Graph API
         try:
-            from outlook_graph import graph_list_and_convert
+            from .outlook_graph import graph_list_and_convert
             
             token, detected_provider = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "", creds.password)
             
@@ -588,7 +634,7 @@ async def message_body(req: MessageBodyRequest) -> Dict[str, Any]:
     if provider == "outlook_graph":
         # Use Microsoft Graph API
         try:
-            from outlook_graph import graph_get_message_details
+            from .outlook_graph import graph_get_message_details
             
             token, detected_provider = await get_outlook_access_token(creds.email, creds.client_id or "", creds.refresh_token or "", creds.password)
             

@@ -194,6 +194,9 @@ export default function Page() {
   const filteredItems = useMemo(() => {
     if (!filterWithOtp) return items;
     return items.filter((item) => {
+      // Ưu tiên dùng item.otp từ backend nếu có
+      if (typeof item.otp === "string" && item.otp.length === 6) return true;
+      // Fallback: tự trích xuất nếu backend không trả về
       const otp = extractOtp(item.subject + "\n" + item.content);
       return otp !== null;
     });
@@ -224,6 +227,8 @@ export default function Page() {
         date: String(x.date ?? ""),
         subject: String(x.subject ?? ""),
         content: String(x.content ?? ""),
+        html: typeof x.html === "string" ? x.html : undefined,
+        otp: typeof x.otp === "string" ? x.otp : (x.otp === null ? null : undefined),
       }));
       
       const count = items.length;
@@ -309,6 +314,8 @@ export default function Page() {
             date: String(x.date ?? ""),
             subject: String(x.subject ?? ""),
             content: String(x.content ?? ""),
+            html: typeof x.html === "string" ? x.html : undefined,
+            otp: typeof x.otp === "string" ? x.otp : (x.otp === null ? null : undefined),
           }));
           
           const nextToken = data.next_page_token || null;
@@ -444,6 +451,8 @@ export default function Page() {
           date: String(x.date ?? ""),
           subject: String(x.subject ?? ""),
           content: String(x.content ?? ""),
+          html: typeof x.html === "string" ? x.html : undefined,
+          otp: typeof x.otp === "string" ? x.otp : (x.otp === null ? null : undefined),
         }));
         const count = newItems.length;
         toast.success(`Đã tải ${count} email`);
