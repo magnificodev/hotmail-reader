@@ -77,7 +77,8 @@ async def graph_list_messages(
     # Build query parameters
     params = {
         "$top": min(limit, 50),  # Graph API max is 999, but we limit to 50
-        "$select": "id,subject,from,toRecipients,receivedDateTime,hasAttachments,isRead,internetMessageId",
+        # Thêm body vào $select để lấy nội dung mail
+        "$select": "id,subject,from,toRecipients,receivedDateTime,body,hasAttachments,isRead,internetMessageId",
     }
     
     # Only add $orderby if no filter (Microsoft Graph limitation for MSA accounts)
@@ -215,8 +216,21 @@ async def graph_list_and_convert(
     
     # Convert to our format
     converted = []
+    # Nếu không có body, gọi API chi tiết để lấy nội dung từng mail
     for msg in messages:
-        converted.append(_parse_graph_message_to_email_message(msg))
+        parsed = _parse_graph_message_to_email_message(msg)
+        # Nếu cả body_text và body_html đều rỗng, gọi API chi tiết để lấy nội dung
+        if not parsed.get("body_text") and not parsed.get("body_html"):
+            try:
+                detail = await graph_get_message_details(access_token, msg.get("id"))
+                # Gộp các trường body vào parsed nếu có
+                for k in ["body_text", "body_html", "body_preview"]:
+                    if detail.get(k):
+                        parsed[k] = detail[k]
+            except Exception as e:
+                import logging
+                logging.warning(f"[OTP DEBUG] Lỗi lấy chi tiết mail {msg.get('id')}: {e}")
+        converted.append(parsed)
     
     # Sort by date descending (client-side) if we have filter
     # (Graph API doesn't support $orderby + $filter for MSA accounts)

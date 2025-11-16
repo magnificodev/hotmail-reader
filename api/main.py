@@ -509,7 +509,11 @@ async def otp(req: OtpRequest) -> Dict[str, Any]:
                     return {"otp": None}
                 
                 # Extract OTP from messages
-                for msg_data in messages_data:
+                import logging
+                for idx, msg_data in enumerate(messages_data):
+                    logging.warning(f"[OTP DEBUG] Mail {idx+1}: subject={msg_data.get('subject')}")
+                    logging.warning(f"[OTP DEBUG] body_text={repr(msg_data.get('body_text'))}")
+                    logging.warning(f"[OTP DEBUG] body_html={repr(msg_data.get('body_html'))}")
                     # Get date
                     date_str = msg_data.get("date", "")
                     try:
@@ -520,26 +524,26 @@ async def otp(req: OtpRequest) -> Dict[str, Any]:
                             continue
                     except:
                         continue
-                    
-                    # Get text content
+
+                    # Lấy text và html
                     text = msg_data.get("body_text") or msg_data.get("body_preview") or ""
                     html = msg_data.get("body_html") or ""
-                
-                # Convert HTML to text if needed
-                if not text and html:
-                    text = html_to_text(html)
-                
-                # Extract OTP
-                found = extract_otp_from_text(text, req.regex)
-                if found:
-                    return {
-                        "otp": found,
-                        "from": msg_data["from"],
-                        "subject": msg_data["subject"],
-                        "date": date_str,
-                    }
-            
-            return {"otp": None}
+
+                    # Ưu tiên trích xuất OTP từ text
+                    found = extract_otp_from_text(text, req.regex)
+                    # Nếu không có, thử convert từ html sang text và trích xuất lại
+                    if not found and html:
+                        text_from_html = html_to_text(html)
+                        found = extract_otp_from_text(text_from_html, req.regex)
+
+                    if found:
+                        return {
+                            "otp": found,
+                            "from": msg_data["from"],
+                            "subject": msg_data["subject"],
+                            "date": date_str,
+                        }
+                return {"otp": None}
         except Exception as e:
             detail = _sanitize_error_message(e, not is_development())
             raise HTTPException(status_code=400, detail=detail)
